@@ -1,0 +1,3 @@
+-- Fresh testing baseline for The Eventus Consulting Group ATS.
+-- This file intentionally contains no demo ATS records.
+-- Run schema.sql first, then upload/import real test data from the app.
