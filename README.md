@@ -54,6 +54,11 @@ npm run api:server
 
 Local development can still run without `DATABASE_URL`; in that mode the backend falls back to `server/data/ats-db.json`.
 
+Deployment guides:
+
+- Render: [DEPLOY_RENDER.md](/Users/viveksharma/Documents/Eventus-ATS-App/DEPLOY_RENDER.md)
+- Azure testing setup: [DEPLOY_AZURE.md](/Users/viveksharma/Documents/Eventus-ATS-App/DEPLOY_AZURE.md)
+
 ## Step 3: SQL Backend Integration Plan
 
 Step 3 prepares the app for a future SQL backend without connecting to paid services.
