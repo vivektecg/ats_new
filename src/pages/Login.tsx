@@ -70,11 +70,13 @@ export default function Login() {
   const [userIdentifier, setUserIdentifier] = useState('');
   const [userPassword, setUserPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
+  const [showPasswordReset, setShowPasswordReset] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [resetEmail, setResetEmail] = useState('');
   const [resetNotice, setResetNotice] = useState('');
   const [resetLink, setResetLink] = useState('');
+  const canShowLocalResetLink = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
 
   const switchMode = (nextMode: LoginMode) => {
     setMode(nextMode);
@@ -82,10 +84,17 @@ export default function Login() {
     setResetNotice('');
     setResetLink('');
     setShowPass(false);
+    setShowPasswordReset(false);
   };
 
   const sendPasswordReset = (targetEmail?: string, requestedBy = 'self-service') => {
-    const email = (targetEmail || resetEmail || userIdentifier || superUserProfile.email).trim().toLowerCase();
+    const email = (targetEmail || resetEmail).trim().toLowerCase();
+    if (!email) {
+      setError('Enter your email address to receive a password reset link.');
+      setResetNotice('');
+      setResetLink('');
+      return;
+    }
     const result = requestPasswordReset(email, requestedBy);
     setResetNotice(result.message);
     setResetLink(result.resetUrl ?? '');
@@ -401,34 +410,50 @@ export default function Login() {
                 <>Sign In <ArrowRight size={15} /></>
               )}
             </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setShowPasswordReset(value => !value);
+                setResetNotice('');
+                setResetLink('');
+                setError('');
+              }}
+              className="w-full text-xs font-semibold text-cyan-300 hover:text-cyan-200"
+            >
+              {showPasswordReset ? 'Hide forgot password' : 'Forgot password?'}
+            </button>
           </form>
 
-          <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
-            <p className="mb-2 text-xs font-semibold text-slate-300">Password reset by email</p>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                type="text"
-                inputMode="email"
-                value={resetEmail}
-                onChange={event => setResetEmail(event.target.value)}
-                placeholder={mode === 'admin' ? superUserProfile.email : 'user-id or user@company.com'}
-                className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white outline-none focus:border-blue-500/60"
-              />
-              <button
-                type="button"
-                onClick={() => sendPasswordReset()}
-                className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-semibold text-blue-200 hover:bg-blue-500/20"
-              >
-                Email reset link
-              </button>
+          {showPasswordReset && (
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+              <p className="mb-2 text-xs font-semibold text-slate-300">Password reset by email</p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  type="text"
+                  inputMode="email"
+                  autoComplete="email"
+                  value={resetEmail}
+                  onChange={event => setResetEmail(event.target.value)}
+                  placeholder=""
+                  className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white outline-none focus:border-blue-500/60"
+                />
+                <button
+                  type="button"
+                  onClick={() => sendPasswordReset()}
+                  className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-semibold text-blue-200 hover:bg-blue-500/20"
+                >
+                  Email reset link
+                </button>
+              </div>
+              {resetNotice && <p className="mt-2 text-xs text-emerald-300">{resetNotice}</p>}
+              {canShowLocalResetLink && resetLink && (
+                <a href={resetLink} className="mt-2 block break-all text-[11px] text-cyan-300 hover:underline">
+                  Local preview reset link: {resetLink}
+                </a>
+              )}
             </div>
-            {resetNotice && <p className="mt-2 text-xs text-emerald-300">{resetNotice}</p>}
-            {resetLink && (
-              <a href={resetLink} className="mt-2 block break-all text-[11px] text-cyan-300 hover:underline">
-                Local preview reset link: {resetLink}
-              </a>
-            )}
-          </div>
+          )}
 
           <div className="mt-8 pt-6 border-t border-white/5 text-center">
             <p className="text-xs text-slate-600 leading-relaxed">
