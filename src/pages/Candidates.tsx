@@ -1122,6 +1122,11 @@ function CandidateFormPanel({
   const [form, setForm] = useState(initial);
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    setForm(initial);
+    setError('');
+  }, [initial]);
+
   function update<K extends keyof CandidateFormState>(key: K, value: CandidateFormState[K]) {
     setForm(previous => ({ ...previous, [key]: value }));
   }
