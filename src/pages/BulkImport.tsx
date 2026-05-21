@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import * as XLSX from 'xlsx';
-import { AlertTriangle, Bot, CalendarClock, FileSpreadsheet, FileUp, Play, UploadCloud } from 'lucide-react';
+import { AlertTriangle, Bot, CalendarClock, Download, FileSpreadsheet, FileUp, Play, Plus, RefreshCw, UploadCloud } from 'lucide-react';
 import { getAllJobs } from '@/lib/localRecords';
 import { upsertLocalCandidates } from '@/lib/atsLocalStore';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import type { Job } from '@/lib/types';
 
@@ -49,6 +50,78 @@ type AutopilotSchedule = {
   lastRunAt?: string;
 };
 
+type CandidateSheetKey =
+  | 'name'
+  | 'email'
+  | 'phone'
+  | 'title'
+  | 'currentCompany'
+  | 'linkedin'
+  | 'location'
+  | 'skills'
+  | 'experience'
+  | 'usExperience'
+  | 'relevantExperience'
+  | 'workAuthorization'
+  | 'visaStatus'
+  | 'currentRate'
+  | 'expectedRate'
+  | 'availability'
+  | 'source'
+  | 'owner'
+  | 'notes';
+
+type TemplateCandidateRow = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  title: string;
+  currentCompany: string;
+  linkedin: string;
+  location: string;
+  skills: string;
+  experience: string;
+  usExperience: string;
+  relevantExperience: string;
+  workAuthorization: string;
+  visaStatus: string;
+  currentRate: string;
+  expectedRate: string;
+  availability: string;
+  source: string;
+  owner: string;
+  notes: string;
+};
+
+const candidateSheetFields: Array<{
+  key: CandidateSheetKey;
+  label: string;
+  aliases: string[];
+  mapsTo: string;
+  placeholder: string;
+}> = [
+  { key: 'name', label: 'Full Name', aliases: ['full name', 'fullname', 'candidate name', 'name'], mapsTo: 'Candidate full name', placeholder: 'John Smith' },
+  { key: 'email', label: 'Email', aliases: ['email', 'email address', 'mail'], mapsTo: 'Email', placeholder: 'john@example.com' },
+  { key: 'phone', label: 'Phone Number', aliases: ['phone', 'phone number', 'mobile', 'contact number'], mapsTo: 'Phone', placeholder: '+1 555 123 4567' },
+  { key: 'title', label: 'Current Title', aliases: ['title', 'current title', 'job title', 'role', 'designation'], mapsTo: 'Current title', placeholder: 'Senior Java Developer' },
+  { key: 'currentCompany', label: 'Current Company', aliases: ['current company', 'company', 'employer'], mapsTo: 'Current company', placeholder: 'Eventus Consulting' },
+  { key: 'linkedin', label: 'LinkedIn URL', aliases: ['linkedin', 'linkedin url', 'linkedin profile'], mapsTo: 'LinkedIn URL', placeholder: 'https://linkedin.com/in/...' },
+  { key: 'location', label: 'Location', aliases: ['location', 'current location', 'city', 'state'], mapsTo: 'Location', placeholder: 'Dallas, TX' },
+  { key: 'skills', label: 'Skills', aliases: ['skills', 'skillset', 'technologies', 'tech stack'], mapsTo: 'Skills', placeholder: 'Java, Spring Boot, AWS' },
+  { key: 'experience', label: 'Total Experience', aliases: ['experience', 'total experience', 'years of experience'], mapsTo: 'Total experience', placeholder: '8' },
+  { key: 'usExperience', label: 'US Experience', aliases: ['us experience', 'usa experience'], mapsTo: 'US experience', placeholder: '5' },
+  { key: 'relevantExperience', label: 'Relevant Experience', aliases: ['relevant experience', 'relevant exp'], mapsTo: 'Relevant experience', placeholder: '6' },
+  { key: 'workAuthorization', label: 'Work Authorization', aliases: ['work authorization', 'work auth', 'authorization'], mapsTo: 'Work authorization', placeholder: 'H-1B' },
+  { key: 'visaStatus', label: 'Visa Status', aliases: ['visa status', 'visa', 'immigration status'], mapsTo: 'Visa status', placeholder: 'Transfer required' },
+  { key: 'currentRate', label: 'Current Rate', aliases: ['current rate', 'current ctc', 'current salary'], mapsTo: 'Current rate', placeholder: '$65/hr' },
+  { key: 'expectedRate', label: 'Expected Rate', aliases: ['expected rate', 'expected ctc', 'expected salary'], mapsTo: 'Expected rate', placeholder: '$72/hr' },
+  { key: 'availability', label: 'Availability', aliases: ['availability', 'notice period', 'available from'], mapsTo: 'Availability', placeholder: '2 weeks' },
+  { key: 'source', label: 'Source', aliases: ['source', 'lead source'], mapsTo: 'Source', placeholder: 'LinkedIn' },
+  { key: 'owner', label: 'Owner', aliases: ['owner', 'recruiter', 'assigned recruiter'], mapsTo: 'Owner', placeholder: 'Sarah Chen' },
+  { key: 'notes', label: 'Notes', aliases: ['notes', 'remarks', 'comments', 'summary'], mapsTo: 'Notes', placeholder: 'Optional recruiter notes' },
+];
+
 const emptyJob: Job = {
   id: '', title: 'No job selected', client: 'Client pending', clientId: '', location: 'Manual location pending', type: 'Contract',
   status: 'Active', priority: 'Medium', salary: 'Open', openings: 0, filled: 0, recruiter: 'SuperUser', description: '',
@@ -77,6 +150,36 @@ function normalizeHeader(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+function createTemplateRow(overrides: Partial<TemplateCandidateRow> = {}): TemplateCandidateRow {
+  return {
+    id: `sheet-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: '',
+    email: '',
+    phone: '',
+    title: '',
+    currentCompany: '',
+    linkedin: '',
+    location: '',
+    skills: '',
+    experience: '',
+    usExperience: '',
+    relevantExperience: '',
+    workAuthorization: '',
+    visaStatus: '',
+    currentRate: '',
+    expectedRate: '',
+    availability: '',
+    source: '',
+    owner: '',
+    notes: '',
+    ...overrides,
+  };
+}
+
+function createTemplateRows(count = 5) {
+  return Array.from({ length: count }, () => createTemplateRow());
+}
+
 function pick(row: Record<string, any>, headers: string[]) {
   const entries = Object.entries(row);
   for (const wanted of headers) {
@@ -89,6 +192,88 @@ function pick(row: Record<string, any>, headers: string[]) {
 function makeWarning(row: PreviewCandidate) {
   const missing = [!row.name && 'Name missing', !row.email && 'Email missing', !row.phone && 'Phone missing'].filter(Boolean);
   return row.warning || missing.join(', ');
+}
+
+function fieldConfigForHeader(header: string) {
+  const normalized = normalizeHeader(header);
+  return candidateSheetFields.find(field =>
+    field.aliases.some(alias => {
+      const normalizedAlias = normalizeHeader(alias);
+      return normalized === normalizedAlias || normalized.includes(normalizedAlias) || normalizedAlias.includes(normalized);
+    })
+  );
+}
+
+function pickSheetValue(row: Record<string, any>, key: CandidateSheetKey) {
+  const field = candidateSheetFields.find(item => item.key === key);
+  return field ? pick(row, field.aliases.map(alias => normalizeHeader(alias))) : '';
+}
+
+function templateRowHasContent(row: TemplateCandidateRow) {
+  return candidateSheetFields.some(field => String(row[field.key] ?? '').trim());
+}
+
+function templateRowCanSync(row: TemplateCandidateRow) {
+  return [row.name, row.email, row.phone, row.title, row.location].some(value => value.trim().length >= 2);
+}
+
+function templateRowToPreview(row: TemplateCandidateRow, index: number): PreviewCandidate {
+  const preview = {
+    name: row.name.trim() || `Sheet Candidate ${index + 1}`,
+    email: row.email.trim(),
+    phone: row.phone.trim(),
+    linkedin: row.linkedin.trim(),
+    title: row.title.trim() || 'ATS Sheet Candidate',
+    location: row.location.trim() || 'Location pending',
+    skills: row.skills.split(',').map(skill => skill.trim()).filter(Boolean),
+  };
+  return { ...preview, warning: makeWarning(preview) };
+}
+
+function templateRowsToPreview(rows: TemplateCandidateRow[]) {
+  return rows.filter(templateRowHasContent).map(templateRowToPreview);
+}
+
+function templateRowToImport(row: TemplateCandidateRow, index: number, sourceLabel: string) {
+  const preview = templateRowToPreview(row, index);
+  const note = row.notes.trim();
+  return {
+    id: row.id,
+    name: row.name.trim() || preview.name,
+    email: row.email.trim(),
+    phone: row.phone.trim(),
+    linkedin: row.linkedin.trim(),
+    title: row.title.trim(),
+    currentCompany: row.currentCompany.trim(),
+    location: row.location.trim(),
+    skills: row.skills,
+    experience: row.experience.trim(),
+    usExperience: row.usExperience.trim(),
+    relevantExperience: row.relevantExperience.trim(),
+    workAuthorization: row.workAuthorization.trim(),
+    visaStatus: row.visaStatus.trim(),
+    currentRate: row.currentRate.trim(),
+    expectedRate: row.expectedRate.trim(),
+    availability: row.availability.trim(),
+    source: row.source.trim() || sourceLabel,
+    recruiter: row.owner.trim() || 'SuperUser',
+    owner: row.owner.trim() || 'SuperUser',
+    warning: preview.warning,
+    notes: note ? [note] : undefined,
+    parsedResumeDetails: note || undefined,
+  };
+}
+
+function downloadTemplateWorkbook(rows: TemplateCandidateRow[]) {
+  const exportRows = rows.length ? rows : createTemplateRows(5);
+  const sheetData = [
+    candidateSheetFields.map(field => field.label),
+    ...exportRows.map(row => candidateSheetFields.map(field => row[field.key] ?? '')),
+  ];
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'ATS Candidates');
+  XLSX.writeFile(workbook, 'eventus-ats-candidate-template.xlsx');
 }
 
 function scheduleDateTime(schedule: Pick<AutopilotSchedule, 'scheduleDate' | 'scheduleTime' | 'timeZone'>) {
@@ -127,6 +312,9 @@ export default function BulkImport() {
   const [excelFile, setExcelFile] = useState<File | null>(null);
   const [excelRows, setExcelRows] = useState<PreviewCandidate[]>([]);
   const [excelMappings, setExcelMappings] = useState<Array<{ header: string; mapsTo: string; status: string }>>([]);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [templateRows, setTemplateRows] = useState<TemplateCandidateRow[]>(() => createTemplateRows());
+  const [sheetSyncSummary, setSheetSyncSummary] = useState('Open the ATS sheet template, fill the headings you need, and matching candidate fields will stay in sync here.');
   const [selectedBoards, setSelectedBoards] = useState(['LinkedIn Recruiter Lite', 'Dice', 'Indeed']);
   const [selectedCountries, setSelectedCountries] = useState(['USA']);
   const [locations, setLocations] = useState('EST remote, New Jersey, Texas, Noida, Chandigarh');
@@ -140,6 +328,7 @@ export default function BulkImport() {
   const [profileLimit, setProfileLimit] = useState(20);
   const [schedules, setSchedules] = useState<AutopilotSchedule[]>(() => readArray<AutopilotSchedule>(AUTOPILOT_SCHEDULES_KEY));
   const [notice, setNotice] = useState('Bulk import workspace ready. Upload a resume batch or Excel sheet to update ATS data.');
+  const excelInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedJob = jobs.find(job => job.id === jobId) ?? jobs[0] ?? emptyJob;
   const requiredSkillList = requiredSkills.split(',').map(skill => skill.trim()).filter(Boolean);
@@ -163,6 +352,18 @@ export default function BulkImport() {
     due.forEach(runSchedule);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const previewRows = templateRowsToPreview(templateRows);
+    setExcelRows(previewRows);
+    const syncableRows = templateRows.filter(templateRowCanSync);
+    if (!syncableRows.length) {
+      setSheetSyncSummary('Add a name, email, phone, title, or location to start live syncing rows into ATS candidates.');
+      return;
+    }
+    upsertLocalCandidates(syncableRows.map((row, index) => templateRowToImport(row, index, excelFile?.name ? `Excel Sheet: ${excelFile.name}` : 'ATS Sheet Template')));
+    setSheetSyncSummary(`${syncableRows.length} row${syncableRows.length === 1 ? '' : 's'} live in ATS candidate records as of ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`);
+  }, [excelFile?.name, templateRows]);
 
   function persistSchedules(next: AutopilotSchedule[]) {
     setSchedules(next);
@@ -202,33 +403,62 @@ export default function BulkImport() {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
     const headers = rows[0] ? Object.keys(rows[0]) : [];
-    setExcelMappings(headers.map(header => ({ header, mapsTo: inferMapping(header), status: inferMapping(header) === 'Ignored' ? 'Ignored' : 'Mapped' })));
-    const parsed = rows.map((row, index) => {
-      const candidate = {
-        name: pick(row, ['name', 'fullname', 'candidatename']) || `Excel Candidate ${index + 1}`,
-        email: pick(row, ['email', 'emailaddress']),
-        phone: pick(row, ['phone', 'phonenumber', 'mobile', 'contact']),
-        linkedin: pick(row, ['linkedin', 'linkedinurl']),
-        title: pick(row, ['title', 'role', 'currenttitle', 'jobtitle']) || 'Excel Imported Candidate',
-        location: pick(row, ['location', 'currentlocation', 'city']) || 'Location pending',
-        skills: pick(row, ['skills', 'skillset', 'technologies']).split(',').map(skill => skill.trim()).filter(Boolean),
-      };
-      return { ...candidate, warning: makeWarning(candidate) };
-    });
-    setExcelRows(parsed);
-    setNotice(`${parsed.length} Excel rows parsed from ${file.name}. Click Import Excel Candidates to commit them to ATS.`);
+    setExcelMappings(headers.map(header => {
+      const mapping = inferMapping(header);
+      return { header, mapsTo: mapping, status: mapping === 'Ignored' ? 'Ignored' : 'Mapped' };
+    }));
+    const parsedTemplateRows = rows.map((row, index) => createTemplateRow({
+      id: `excel-${Date.now()}-${index}`,
+      name: pickSheetValue(row, 'name'),
+      email: pickSheetValue(row, 'email'),
+      phone: pickSheetValue(row, 'phone'),
+      title: pickSheetValue(row, 'title'),
+      currentCompany: pickSheetValue(row, 'currentCompany'),
+      linkedin: pickSheetValue(row, 'linkedin'),
+      location: pickSheetValue(row, 'location'),
+      skills: pickSheetValue(row, 'skills'),
+      experience: pickSheetValue(row, 'experience'),
+      usExperience: pickSheetValue(row, 'usExperience'),
+      relevantExperience: pickSheetValue(row, 'relevantExperience'),
+      workAuthorization: pickSheetValue(row, 'workAuthorization'),
+      visaStatus: pickSheetValue(row, 'visaStatus'),
+      currentRate: pickSheetValue(row, 'currentRate'),
+      expectedRate: pickSheetValue(row, 'expectedRate'),
+      availability: pickSheetValue(row, 'availability'),
+      source: pickSheetValue(row, 'source'),
+      owner: pickSheetValue(row, 'owner'),
+      notes: pickSheetValue(row, 'notes'),
+    }));
+    setTemplateRows(parsedTemplateRows.length ? parsedTemplateRows : createTemplateRows());
+    setTemplateOpen(true);
+    setNotice(parsedTemplateRows.length
+      ? `${parsedTemplateRows.length} spreadsheet row${parsedTemplateRows.length === 1 ? '' : 's'} parsed from ${file.name}. The ATS sheet editor is open and syncing those candidate fields live.`
+      : `${file.name} opened, but no data rows were found. Use the ATS sheet editor to start filling candidate headings.`);
   }
 
   function inferMapping(header: string) {
-    const normalized = normalizeHeader(header);
-    if (normalized.includes('name')) return 'Candidate name';
-    if (normalized.includes('email')) return 'Email';
-    if (normalized.includes('phone') || normalized.includes('mobile')) return 'Phone';
-    if (normalized.includes('linkedin')) return 'LinkedIn URL';
-    if (normalized.includes('location') || normalized.includes('city')) return 'Location';
-    if (normalized.includes('skill')) return 'Skills';
-    if (normalized.includes('title') || normalized.includes('role')) return 'Current title';
-    return 'Ignored';
+    return fieldConfigForHeader(header)?.mapsTo ?? 'Ignored';
+  }
+
+  function openExcelPicker() {
+    excelInputRef.current?.click();
+  }
+
+  function updateTemplateRow(rowId: string, key: CandidateSheetKey, value: string) {
+    setTemplateRows(current => current.map(row => row.id === rowId ? { ...row, [key]: value } : row));
+  }
+
+  function addTemplateRow() {
+    setTemplateRows(current => [...current, createTemplateRow()]);
+  }
+
+  function resetTemplateSheet() {
+    setExcelFile(null);
+    setExcelMappings([]);
+    setTemplateRows(createTemplateRows());
+    setExcelRows([]);
+    setSheetSyncSummary('ATS sheet reset. Fill the Add Candidate headings again or upload a new spreadsheet.');
+    setNotice('ATS candidate sheet reset. You can start with a fresh template or upload another Excel/CSV file.');
   }
 
   function importResumeBatch() {
@@ -246,12 +476,13 @@ export default function BulkImport() {
   }
 
   function importExcelCandidates() {
-    if (!excelRows.length) {
-      setNotice('Upload and parse an Excel/CSV file first.');
+    const syncableRows = templateRows.filter(templateRowCanSync);
+    if (!syncableRows.length) {
+      setNotice('Open the ATS sheet template or upload an Excel/CSV file first.');
       return;
     }
-    const result = upsertLocalCandidates(excelRows.map(row => ({ ...row, source: 'Excel Import', recruiter: 'SuperUser' })));
-    setNotice(`Excel import committed to ATS database: ${result.imported} new candidates saved and available across Candidates, Pipeline, Reports, Dashboard, and AI modules.`);
+    const result = upsertLocalCandidates(syncableRows.map((row, index) => templateRowToImport(row, index, excelFile?.name ? `Excel Import: ${excelFile.name}` : 'ATS Sheet Template')));
+    setNotice(`${syncableRows.length} spreadsheet row${syncableRows.length === 1 ? '' : 's'} synced to ATS. ${result.imported} new candidate${result.imported === 1 ? '' : 's'} were created and existing matches were updated in place.`);
   }
 
   function runSchedule(schedule: AutopilotSchedule) {
@@ -320,13 +551,19 @@ export default function BulkImport() {
         <Panel title="Option 2: Upload Data From Excel" icon={<FileSpreadsheet size={16} />}>
           <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
             <div className="space-y-4">
-              <label className="block rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-6 text-center cursor-pointer hover:bg-white/[0.05]">
+              <div onClick={() => setTemplateOpen(true)} className="block rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-6 text-center cursor-pointer hover:bg-white/[0.05]">
                 <FileSpreadsheet size={28} className="mx-auto mb-3 text-blue-300" />
                 <p className="text-sm font-semibold text-white">{excelFile?.name ?? 'Choose Excel/CSV file from computer'}</p>
-                <p className="mt-1 text-xs text-slate-500">Supports XLSX, XLS, CSV, TSV.</p>
-                <input type="file" accept=".xlsx,.xls,.csv,.tsv" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) void parseExcelFile(file); }} />
-              </label>
-              <button onClick={importExcelCandidates} className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500"><UploadCloud size={15} />Import Excel Candidates</button>
+                <p className="mt-1 text-xs text-slate-500">Click here to open the ATS Add Candidate sheet template, or upload an existing XLSX, XLS, CSV, or TSV file.</p>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  <button onClick={event => { event.stopPropagation(); setTemplateOpen(true); }} className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-semibold text-blue-100 hover:bg-blue-500/15">Open ATS sheet template</button>
+                  <button onClick={event => { event.stopPropagation(); openExcelPicker(); }} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/10">Upload filled file</button>
+                </div>
+                <input ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,.tsv" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) void parseExcelFile(file); event.currentTarget.value = ''; }} />
+              </div>
+              <button onClick={importExcelCandidates} className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500"><UploadCloud size={15} />Sync Sheet To ATS</button>
+              <button onClick={() => downloadTemplateWorkbook(templateRows)} className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10"><Download size={15} />Download ATS Template</button>
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-100">{sheetSyncSummary}</div>
             </div>
             <div className="space-y-4">
               <CandidatePreview rows={excelRows} empty="No spreadsheet rows parsed yet." />
@@ -369,6 +606,60 @@ export default function BulkImport() {
           </div>
         </Panel>
       )}
+
+      <Dialog open={templateOpen} onOpenChange={setTemplateOpen}>
+        <DialogContent className="max-h-[88vh] max-w-[96vw] gap-0 overflow-hidden border border-white/10 bg-[#08111f] p-0 text-white">
+          <DialogHeader className="border-b border-white/10 px-6 py-5">
+            <DialogTitle className="text-white">ATS Candidate Sheet Template</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              These headings mirror the ATS Add Candidate section. Fill only the columns you need. As rows are filled, matching candidate fields are synced into ATS in real time.
+            </DialogDescription>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button onClick={() => downloadTemplateWorkbook(templateRows)} className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100 hover:bg-white/10"><Download size={14} />Download Excel template</button>
+              <button onClick={openExcelPicker} className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100 hover:bg-white/10"><UploadCloud size={14} />Upload spreadsheet</button>
+              <button onClick={addTemplateRow} className="inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-semibold text-blue-100 hover:bg-blue-500/15"><Plus size={14} />Add row</button>
+              <button onClick={resetTemplateSheet} className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/10"><RefreshCw size={14} />Reset sheet</button>
+            </div>
+          </DialogHeader>
+
+          <div className="border-b border-white/10 bg-emerald-500/10 px-6 py-3 text-xs text-emerald-100">{sheetSyncSummary}</div>
+
+          <div className="overflow-auto">
+            <table className="min-w-[2500px] table-fixed">
+              <thead className="sticky top-0 z-10 bg-[#0d1729]">
+                <tr className="border-b border-white/10">
+                  <th className="w-14 px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">Row</th>
+                  {candidateSheetFields.map(field => (
+                    <th key={field.key} className="min-w-[180px] px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">{field.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {templateRows.map((row, rowIndex) => (
+                  <tr key={row.id} className="border-b border-white/5 align-top last:border-0">
+                    <td className="px-3 py-3 text-sm font-semibold text-slate-400">{rowIndex + 1}</td>
+                    {candidateSheetFields.map(field => (
+                      <td key={field.key} className="px-3 py-3">
+                        <input
+                          value={row[field.key]}
+                          onChange={event => updateTemplateRow(row.id, field.key, event.target.value)}
+                          placeholder={field.placeholder}
+                          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none transition-colors placeholder:text-slate-600 focus:border-blue-500/60"
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-white/10 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-slate-400">Optional columns can stay blank. Use Name, Email, Phone, Title, or Location to begin syncing a row.</p>
+            <button onClick={importExcelCandidates} className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-500"><UploadCloud size={15} />Sync current sheet</button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
