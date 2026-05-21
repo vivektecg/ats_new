@@ -253,8 +253,22 @@ function queuePersistAuthState() {
 
 export async function hydrateAuthState() {
   if (typeof window === 'undefined') return;
+  const localState = readLocalAuthState();
   const state = await requestAuthState();
-  if (!state) return;
+  if (!state) {
+    if (localState.users.length > 0) {
+      await persistAuthState();
+    }
+    return;
+  }
+  if (state.users.length === 0 && localState.users.length > 0) {
+    await requestAuthState({
+      method: 'PUT',
+      body: JSON.stringify(localState),
+    });
+    writeLocalAuthState(localState);
+    return;
+  }
   writeLocalAuthState(state);
 }
 
@@ -266,6 +280,10 @@ export function ensureAuthHydrated() {
     });
   }
   return authHydrationPromise;
+}
+
+export async function syncAuthStateNow() {
+  await persistAuthState();
 }
 
 export function getSession(): AuthSession | null {

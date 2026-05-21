@@ -37,6 +37,7 @@ import {
   saveSuperUserProfile,
   saveUsers,
   SectionKey,
+  syncAuthStateNow,
   setSuperUserPassword,
   verifySuperUserPassword,
 } from '@/lib/auth';
@@ -177,6 +178,7 @@ export default function UserManagement() {
   const updateUsers = (nextUsers: AppUser[], successMessage: string) => {
     setUsers(nextUsers);
     saveUsers(nextUsers);
+    void syncAuthStateNow();
     setMessage(successMessage);
     setLatestResetLink('');
     setError('');
@@ -252,7 +254,7 @@ export default function UserManagement() {
     } : user), 'User details updated.');
   };
 
-  const resetPassword = (userId: string, password: string) => {
+  const resetPassword = async (userId: string, password: string) => {
     if (!password.trim()) {
       setError('Enter a temporary password before resetting.');
       return;
@@ -270,6 +272,7 @@ export default function UserManagement() {
     } : user);
     setUsers(nextUsers);
     saveUsers(nextUsers);
+    await syncAuthStateNow();
     if (target) {
       setUsers(getUsers());
       setLatestResetLink('');
@@ -287,7 +290,7 @@ export default function UserManagement() {
     updateUsers(nextUsers, 'User profile picture saved.');
   };
 
-  const handleCreateUser = (event: FormEvent) => {
+  const handleCreateUser = async (event: FormEvent) => {
     event.preventDefault();
     setMessage('');
     setError('');
@@ -328,6 +331,7 @@ export default function UserManagement() {
     const nextUsers = [user, ...users];
     setUsers(nextUsers);
     saveUsers(nextUsers);
+    await syncAuthStateNow();
     setUsers(getUsers());
     setSelectedUserId(user.id);
     setForm({ name: '', email: '', password: '', avatarUrl: '', active: true, permissions: defaultUserPermissions });

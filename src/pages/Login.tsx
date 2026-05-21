@@ -1,4 +1,4 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -17,6 +17,7 @@ import { BeamBackground } from '@/components/ui/beam-background';
 import {
   allSections,
   canAccess,
+  ensureAuthHydrated,
   getSuperUserProfile,
   getUsers,
   makeSuperUserSession,
@@ -78,6 +79,10 @@ export default function Login() {
   const [resetLink, setResetLink] = useState('');
   const canShowLocalResetLink = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
 
+  useEffect(() => {
+    void ensureAuthHydrated();
+  }, []);
+
   const switchMode = (nextMode: LoginMode) => {
     setMode(nextMode);
     setError('');
@@ -112,6 +117,7 @@ export default function Login() {
   const handleLogin = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
+    await ensureAuthHydrated();
 
     if (mode === 'admin') {
       const normalizedAdminEmail = adminEmail.trim().toLowerCase();
