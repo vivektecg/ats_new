@@ -649,6 +649,32 @@ export function getSuperUserProfile() {
   return readLocalSuperUserProfile();
 }
 
+export function getOwnerDisplayName(session: AuthSession | null = resolveSession()) {
+  if (session?.role === 'User') {
+    const userName = session.name.trim();
+    return userName || 'SuperUser';
+  }
+  return 'SuperUser';
+}
+
+export function getAssignableOwnerNames() {
+  const names = new Set<string>(['SuperUser']);
+  getUsers()
+    .filter(user => user.active)
+    .forEach(user => {
+      const name = user.name.trim();
+      if (name) names.add(name);
+    });
+  return Array.from(names);
+}
+
+export function normalizeOwnerName(value: string | null | undefined, fallback = 'SuperUser') {
+  const normalizedValue = String(value ?? '').trim();
+  if (!normalizedValue) return fallback;
+  const matched = getAssignableOwnerNames().find(name => name.toLowerCase() === normalizedValue.toLowerCase());
+  return matched ?? fallback;
+}
+
 export function saveSuperUserProfile(profile: Partial<SuperUserProfile>) {
   const nextProfile = normalizeSuperUserProfile({
     ...readLocalSuperUserProfile(),

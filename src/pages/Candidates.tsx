@@ -7,8 +7,10 @@ import {
   Search, Send, ShieldCheck, Sparkles, Target, Trash2, Upload, UserRound, X,
 } from 'lucide-react';
 import { getAllJobs, getAllSubmissions } from '@/lib/localRecords';
+import { archiveAtsUpload } from '@/lib/archiveApi';
 import { ATS_RECORDS_UPDATED_EVENT, LOCAL_CANDIDATES_KEY, normalizeCandidateRecord } from '@/lib/atsLocalStore';
 import { saveRows } from '@/lib/atsApi';
+import { getAssignableOwnerNames, getOwnerDisplayName, normalizeOwnerName, SESSION_UPDATED_EVENT } from '@/lib/auth';
 import { formatCallDuration, openCandidateDialer, saveCandidateCallLog, type CallOutcome } from '@/lib/callLogs';
 import { createCandidateJobSubmission, duplicateSubmissionMessage, findCandidateJobSubmission } from '@/lib/submissionStore';
 import type { Candidate, CandidateStatus } from '@/lib/types';
@@ -44,6 +46,8 @@ type FileAttachment = {
   fileType: string;
   fileSize: number;
   uploadedAt: string;
+  archivePath?: string;
+  archiveSha256?: string;
 };
 
 type CandidateFormState = {
@@ -76,6 +80,7 @@ type CandidateFormState = {
   includeSupportingDocuments: boolean;
   supportingDocuments: string;
   notes: string;
+  resumeAttachment?: FileAttachment;
 };
 
 type ActionMode =
@@ -107,7 +112,6 @@ const statusColors: Record<CandidateStatus, string> = {
 
 const allStatuses: CandidateStatus[] = ['New', 'Screening', 'Interview', 'Offer', 'Placed', 'Rejected', 'On Hold'];
 const pipelineOrder: CandidateStatus[] = ['New', 'Screening', 'Interview', 'Offer', 'Placed'];
-const recruiters = ['Sarah Chen', 'James Park', 'Maria Torres', 'All Team'];
 const sources = ['LinkedIn', 'Referral', 'Indeed', 'Job Board', 'Website', 'Upload', 'Direct Sourcing'];
 const workAuthorizationOptions = ['US Citizen', 'USC', 'Green Card', 'H-1B', 'H4-EAD', 'OPT', 'CPT', 'GC-EAD', 'L2S', 'L-2 EAD', 'EAD', 'TN Visa', 'Other'];
 const supportingDocumentOptions = ['Visa copy', 'DL copy', 'ID proof', 'Passport copy', 'EAD card', 'I-94', 'Education certificate', 'Certification'];
@@ -267,39 +271,42 @@ function saveLocalCandidates(rows: CandidateRecord[]) {
   saveRows('candidates', rows);
 }
 
-const emptyForm: CandidateFormState = {
-  fullName: '',
-  email: '',
-  phone: '',
-  title: '',
-  currentCompany: '',
-  linkedinUrl: '',
-  location: '',
-  skills: '',
-  experience: '',
-  usExperience: '',
-  relevantExperience: '',
-  workAuthorization: 'US Citizen',
-  visaStatus: 'No sponsorship needed',
-  currentRate: '',
-  expectedRate: '',
-  relocationPreference: 'Open to relocate',
-  passportNumber: '',
-  availability: 'Immediately',
-  source: 'LinkedIn',
-  owner: 'Sarah Chen',
-  status: 'New',
-  parsedResumeDetails: '',
-  education: '',
-  certifications: '',
-  documentChecklist: 'Resume, Work authorization',
-  resumeFile: '',
-  includeSupportingDocuments: false,
-  supportingDocuments: '',
-  notes: '',
-};
+function createEmptyForm(defaultOwner: string): CandidateFormState {
+  return {
+    fullName: '',
+    email: '',
+    phone: '',
+    title: '',
+    currentCompany: '',
+    linkedinUrl: '',
+    location: '',
+    skills: '',
+    experience: '',
+    usExperience: '',
+    relevantExperience: '',
+    workAuthorization: 'US Citizen',
+    visaStatus: 'No sponsorship needed',
+    currentRate: '',
+    expectedRate: '',
+    relocationPreference: 'Open to relocate',
+    passportNumber: '',
+    availability: 'Immediately',
+    source: 'LinkedIn',
+    owner: normalizeOwnerName(defaultOwner, 'SuperUser'),
+    status: 'New',
+    parsedResumeDetails: '',
+    education: '',
+    certifications: '',
+    documentChecklist: 'Resume, Work authorization',
+    resumeFile: '',
+    includeSupportingDocuments: false,
+    supportingDocuments: '',
+    notes: '',
+    resumeAttachment: undefined,
+  };
+}
 
-function formFromCandidate(candidate: CandidateRecord): CandidateFormState {
+function formFromCandidate(candidate: CandidateRecord, fallbackOwner: string): CandidateFormState {
   return {
     fullName: candidate.name,
     email: candidate.email,
@@ -320,7 +327,7 @@ function formFromCandidate(candidate: CandidateRecord): CandidateFormState {
     passportNumber: candidate.passportNumber,
     availability: candidate.availability,
     source: candidate.source,
-    owner: candidate.owner,
+    owner: normalizeOwnerName(candidate.owner || candidate.recruiter, fallbackOwner),
     status: candidate.status,
     parsedResumeDetails: candidate.parsedResumeDetails,
     education: candidate.education,
@@ -330,12 +337,14 @@ function formFromCandidate(candidate: CandidateRecord): CandidateFormState {
     includeSupportingDocuments: candidate.supportingDocuments.length > 0,
     supportingDocuments: candidate.supportingDocuments.join(', '),
     notes: candidate.notes.join('\n'),
+    resumeAttachment: candidate.resumeAttachment,
   };
 }
 
-function candidateFromForm(form: CandidateFormState, id: string): CandidateRecord {
+function candidateFromForm(form: CandidateFormState, id: string, fallbackOwner: string): CandidateRecord {
   const now = new Date().toISOString().slice(0, 10);
   const skills = form.skills.split(',').map(skill => skill.trim()).filter(Boolean);
+  const owner = normalizeOwnerName(form.owner, fallbackOwner);
 
   return {
     id,
@@ -360,8 +369,8 @@ function candidateFromForm(form: CandidateFormState, id: string): CandidateRecor
     salary: form.expectedRate || form.currentRate || 'Open',
     availability: form.availability,
     source: form.source,
-    recruiter: form.owner,
-    owner: form.owner,
+    recruiter: owner,
+    owner,
     createdAt: now,
     updatedAt: now,
     summary: form.notes || `${form.fullName} is ready for recruiter review.`,
@@ -371,14 +380,14 @@ function candidateFromForm(form: CandidateFormState, id: string): CandidateRecor
     certifications: form.certifications,
     documentChecklist: form.documentChecklist.split(',').map(item => item.trim()).filter(Boolean),
     resumeFile: form.resumeFile.trim(),
-    resumeAttachment: form.resumeFile.trim()
+    resumeAttachment: form.resumeAttachment ?? (form.resumeFile.trim()
       ? {
           fileName: form.resumeFile.trim(),
           fileType: 'manual-entry',
           fileSize: 0,
           uploadedAt: new Date().toISOString(),
         }
-      : undefined,
+      : undefined),
     supportingDocuments: form.includeSupportingDocuments
       ? form.supportingDocuments.split(',').map(item => item.trim()).filter(Boolean)
       : [],
@@ -411,6 +420,8 @@ export default function Candidates() {
   const [page, setPage] = useState(1);
   const [action, setAction] = useState<ActionMode>(null);
   const [, setNotice] = useState('Candidates module is ready for updates.');
+  const [ownerOptions, setOwnerOptions] = useState<string[]>(() => getAssignableOwnerNames());
+  const [sessionOwner, setSessionOwner] = useState(() => getOwnerDisplayName());
   const deferredSearch = useDeferredValue(search);
   const deferredSkillSearch = useDeferredValue(skillSearch);
   const deferredRoleSearch = useDeferredValue(roleSearch);
@@ -421,6 +432,15 @@ export default function Candidates() {
       setAction({ type: 'add' });
     }
   }, [location.pathname]);
+
+  useEffect(() => {
+    const refreshOwners = () => {
+      setOwnerOptions(getAssignableOwnerNames());
+      setSessionOwner(getOwnerDisplayName());
+    };
+    window.addEventListener(SESSION_UPDATED_EVENT, refreshOwners);
+    return () => window.removeEventListener(SESSION_UPDATED_EVENT, refreshOwners);
+  }, []);
 
   useEffect(() => {
     if (!didHydrateCandidates.current) {
@@ -440,6 +460,20 @@ export default function Candidates() {
     window.addEventListener(ATS_RECORDS_UPDATED_EVENT, refreshRows);
     return () => window.removeEventListener(ATS_RECORDS_UPDATED_EVENT, refreshRows);
   }, []);
+
+  useEffect(() => {
+    setCandidateRows(rows => {
+      let changed = false;
+      const next = rows.map(candidate => {
+        const owner = normalizeOwnerName(candidate.owner, 'SuperUser');
+        const recruiter = normalizeOwnerName(candidate.recruiter, owner);
+        if (owner === candidate.owner && recruiter === candidate.recruiter) return candidate;
+        changed = true;
+        return { ...candidate, owner, recruiter };
+      });
+      return changed ? next : rows;
+    });
+  }, [ownerOptions, sessionOwner]);
 
   const activeRows = useMemo(() => candidateRows.filter(candidate => !candidate.archived), [candidateRows]);
   const archivedRows = useMemo(() => candidateRows.filter(candidate => candidate.archived), [candidateRows]);
@@ -483,7 +517,7 @@ export default function Candidates() {
       setCandidateRows(rows => rows.map(candidate =>
         candidate.id === existing.id
           ? {
-              ...candidateFromForm(form, existing.id),
+              ...candidateFromForm(form, existing.id, sessionOwner),
               createdAt: existing.createdAt,
               rating: existing.rating,
               resumeFile: existing.resumeFile,
@@ -496,7 +530,7 @@ export default function Candidates() {
       ));
       record(`${form.fullName} profile updated.`);
     } else {
-      const next = candidateFromForm(form, `c${Date.now()}`);
+      const next = candidateFromForm(form, `c${Date.now()}`, sessionOwner);
       setCandidateRows(rows => [next, ...rows]);
       record(`${next.name} added to Candidates.`);
     }
@@ -834,7 +868,8 @@ export default function Candidates() {
       {action?.type === 'add' && (
         <CandidateFormPanel
           title="Add Candidate"
-          initial={emptyForm}
+          initial={createEmptyForm(sessionOwner)}
+          ownerOptions={ownerOptions}
           submitLabel="Add Candidate"
           onClose={() => setAction(null)}
           onSubmit={form => upsertCandidate(form)}
@@ -843,7 +878,8 @@ export default function Candidates() {
       {action?.type === 'edit' && (
         <CandidateFormPanel
           title={`Edit ${action.candidate.name}`}
-          initial={formFromCandidate(action.candidate)}
+          initial={formFromCandidate(action.candidate, sessionOwner)}
+          ownerOptions={ownerOptions}
           submitLabel="Update Candidate"
           onClose={() => setAction(null)}
           onSubmit={form => upsertCandidate(form, action.candidate)}
@@ -1071,12 +1107,14 @@ function Panel({ title, children, onClose }: { title: string; children: React.Re
 function CandidateFormPanel({
   title,
   initial,
+  ownerOptions,
   submitLabel,
   onClose,
   onSubmit,
 }: {
   title: string;
   initial: CandidateFormState;
+  ownerOptions: string[];
   submitLabel: string;
   onClose: () => void;
   onSubmit: (form: CandidateFormState) => void;
@@ -1130,7 +1168,7 @@ function CandidateFormPanel({
           <SelectField label="Relocation Preference" value={form.relocationPreference} options={['Open to relocate', 'Remote only', 'Hybrid only', 'Local only', 'Not open to relocate']} onChange={value => update('relocationPreference', value)} />
           <SelectField label="Availability" value={form.availability} options={['Immediately', '1 week', '2 weeks', '3 weeks', '1 month', 'Placed']} onChange={value => update('availability', value)} />
           <SelectField label="Source" value={form.source} options={sources} onChange={value => update('source', value)} />
-          <SelectField label="Owner" value={form.owner} options={recruiters} onChange={value => update('owner', value)} />
+          <SelectField label="Owner" value={form.owner} options={ownerOptions} onChange={value => update('owner', value)} />
           <SelectField label="Status" value={form.status} options={allStatuses} onChange={value => update('status', value as CandidateStatus)} />
           <Field label="Education" value={form.education} onChange={value => update('education', value)} />
           <Field label="Certifications" value={form.certifications} onChange={value => update('certifications', value)} />
@@ -1160,7 +1198,29 @@ function CandidateFormPanel({
                   onChange={event => {
                     const file = event.target.files?.[0];
                     if (!file) return;
-                    update('resumeFile', file.name);
+                    void archiveAtsUpload(file, {
+                      entityType: 'candidate-resume',
+                      entityId: form.email.trim() || form.fullName.trim() || 'candidate-form',
+                      collection: 'candidates',
+                    }).then(metadata => {
+                      update('resumeFile', file.name);
+                      update('resumeAttachment', {
+                        fileName: file.name,
+                        fileType: file.type || 'application/octet-stream',
+                        fileSize: file.size,
+                        uploadedAt: metadata.storedAt,
+                        archivePath: metadata.archivePath,
+                        archiveSha256: metadata.sha256,
+                      });
+                    }).catch(() => {
+                      update('resumeFile', file.name);
+                      update('resumeAttachment', {
+                        fileName: file.name,
+                        fileType: file.type || 'application/octet-stream',
+                        fileSize: file.size,
+                        uploadedAt: new Date().toISOString(),
+                      });
+                    });
                     event.target.value = '';
                   }}
                 />
@@ -1474,9 +1534,25 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
             onChange={event => {
               const file = event.target.files?.[0];
               if (!file) return;
-              const next = attachmentFromFile(file);
-              setResumeAttachment(next);
-              setFileName(next.fileName);
+              void archiveAtsUpload(file, {
+                entityType: 'candidate-resume',
+                entityId: candidate.id,
+                collection: 'candidates',
+                recordId: candidate.id,
+              }).then(metadata => {
+                const next = {
+                  ...attachmentFromFile(file),
+                  archivePath: metadata.archivePath,
+                  archiveSha256: metadata.sha256,
+                  uploadedAt: metadata.storedAt,
+                };
+                setResumeAttachment(next);
+                setFileName(next.fileName);
+              }).catch(() => {
+                const next = attachmentFromFile(file);
+                setResumeAttachment(next);
+                setFileName(next.fileName);
+              });
               event.target.value = '';
             }}
           />
@@ -1519,11 +1595,29 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
                 onChange={event => {
                   const files = Array.from(event.target.files ?? []);
                   if (!files.length) return;
-                  const uploaded = files.map(attachmentFromFile);
-                  const nextNames = [...new Set([...supportingDocumentList, ...uploaded.map(file => file.fileName)])];
-                  setSupportingDocuments(nextNames.join(', '));
-                  setSupportingAttachments(current => [...uploaded, ...current]);
-                  event.target.value = '';
+                  void Promise.all(files.map(async file => {
+                    try {
+                      const metadata = await archiveAtsUpload(file, {
+                        entityType: 'candidate-supporting-document',
+                        entityId: candidate.id,
+                        collection: 'candidates',
+                        recordId: candidate.id,
+                      });
+                      return {
+                        ...attachmentFromFile(file),
+                        archivePath: metadata.archivePath,
+                        archiveSha256: metadata.sha256,
+                        uploadedAt: metadata.storedAt,
+                      };
+                    } catch {
+                      return attachmentFromFile(file);
+                    }
+                  })).then(uploaded => {
+                    const nextNames = [...new Set([...supportingDocumentList, ...uploaded.map(file => file.fileName)])];
+                    setSupportingDocuments(nextNames.join(', '));
+                    setSupportingAttachments(current => [...uploaded, ...current]);
+                    event.target.value = '';
+                  });
                 }}
               />
             </label>

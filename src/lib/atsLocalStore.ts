@@ -1,5 +1,6 @@
 import type { CandidateStatus, Priority } from './types';
 import { LOCAL_CANDIDATES_KEY, LOCAL_JOBS_KEY, saveRows } from './atsApi';
+import { getOwnerDisplayName, normalizeOwnerName } from './auth';
 
 export { LOCAL_CANDIDATES_KEY, LOCAL_JOBS_KEY } from './atsApi';
 export const ATS_RECORDS_UPDATED_EVENT = 'eventus:ats-records-updated';
@@ -77,6 +78,8 @@ export function normalizeCandidateRecord(input: Partial<CandidateImportInput> & 
   const source = input.source ?? 'Import';
   const warning = input.warning ? `Import warning: ${input.warning}` : '';
   const title = input.title ?? input.currentTitle ?? 'Imported Candidate';
+  const fallbackOwner = getOwnerDisplayName();
+  const owner = normalizeOwnerName(input.owner ?? input.recruiter, fallbackOwner);
 
   return {
     id: String(input.id ?? `c-import-${Date.now()}-${index}`),
@@ -101,8 +104,8 @@ export function normalizeCandidateRecord(input: Partial<CandidateImportInput> & 
     salary: input.salary ?? input.expectedRate ?? 'Open',
     availability: input.availability ?? 'Needs confirmation',
     source,
-    recruiter: input.recruiter ?? input.owner ?? 'SuperUser',
-    owner: input.owner ?? input.recruiter ?? 'SuperUser',
+    recruiter: owner,
+    owner,
     createdAt,
     updatedAt: input.updatedAt ?? today(),
     summary: input.summary ?? `${source} candidate imported into The Eventus Consulting Group ATS.${warning ? ` ${warning}` : ''}`,

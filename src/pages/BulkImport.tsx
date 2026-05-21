@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { AlertTriangle, Bot, CalendarClock, Download, FileSpreadsheet, FileUp, Play, Plus, RefreshCw, UploadCloud } from 'lucide-react';
 import { getAllJobs } from '@/lib/localRecords';
 import { upsertLocalCandidates } from '@/lib/atsLocalStore';
+import { getOwnerDisplayName } from '@/lib/auth';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import type { Job } from '@/lib/types';
@@ -118,7 +119,7 @@ const candidateSheetFields: Array<{
   { key: 'expectedRate', label: 'Expected Rate', aliases: ['expected rate', 'expected ctc', 'expected salary'], mapsTo: 'Expected rate', placeholder: '$72/hr' },
   { key: 'availability', label: 'Availability', aliases: ['availability', 'notice period', 'available from'], mapsTo: 'Availability', placeholder: '2 weeks' },
   { key: 'source', label: 'Source', aliases: ['source', 'lead source'], mapsTo: 'Source', placeholder: 'LinkedIn' },
-  { key: 'owner', label: 'Owner', aliases: ['owner', 'recruiter', 'assigned recruiter'], mapsTo: 'Owner', placeholder: 'Sarah Chen' },
+  { key: 'owner', label: 'Owner', aliases: ['owner', 'recruiter', 'assigned recruiter'], mapsTo: 'Owner', placeholder: 'ATS username' },
   { key: 'notes', label: 'Notes', aliases: ['notes', 'remarks', 'comments', 'summary'], mapsTo: 'Notes', placeholder: 'Optional recruiter notes' },
 ];
 
@@ -306,6 +307,7 @@ function emailTable(rows: PreviewCandidate[]) {
 export default function BulkImport() {
   const [searchParams] = useSearchParams();
   const jobs = getAllJobs();
+  const currentOwner = getOwnerDisplayName();
   const [activeMode, setActiveMode] = useState<'resume' | 'excel' | 'autopilot'>(() => searchParams.get('mode') === 'excel' ? 'excel' : 'resume');
   const [resumeFiles, setResumeFiles] = useState<File[]>([]);
   const [resumeRows, setResumeRows] = useState<PreviewCandidate[]>([]);
@@ -361,7 +363,11 @@ export default function BulkImport() {
       setSheetSyncSummary('Add a name, email, phone, title, or location to start live syncing rows into ATS candidates.');
       return;
     }
-    upsertLocalCandidates(syncableRows.map((row, index) => templateRowToImport(row, index, excelFile?.name ? `Excel Sheet: ${excelFile.name}` : 'ATS Sheet Template')));
+    upsertLocalCandidates(syncableRows.map((row, index) => ({
+      ...templateRowToImport(row, index, excelFile?.name ? `Excel Sheet: ${excelFile.name}` : 'ATS Sheet Template'),
+      recruiter: row.owner.trim() || currentOwner,
+      owner: row.owner.trim() || currentOwner,
+    })));
     setSheetSyncSummary(`${syncableRows.length} row${syncableRows.length === 1 ? '' : 's'} live in ATS candidate records as of ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`);
   }, [excelFile?.name, templateRows]);
 
@@ -469,7 +475,8 @@ export default function BulkImport() {
     const result = upsertLocalCandidates(resumeRows.map(row => ({
       ...row,
       source: 'Bulk Resume Upload',
-      recruiter: 'SuperUser',
+      recruiter: currentOwner,
+      owner: currentOwner,
       resumeAttachment: row.resumeFile ? { fileName: row.resumeFile, fileType: 'resume-upload', fileSize: resumeFiles.find(file => file.name === row.resumeFile)?.size ?? 0, uploadedAt: new Date().toISOString() } : undefined,
     })));
     setNotice(`Bulk resume import completed: ${result.imported} new candidates saved to ATS database. Candidates, Pipeline, Reports, Dashboard, and AI modules will refresh from the shared store.`);
@@ -481,14 +488,18 @@ export default function BulkImport() {
       setNotice('Open the ATS sheet template or upload an Excel/CSV file first.');
       return;
     }
-    const result = upsertLocalCandidates(syncableRows.map((row, index) => templateRowToImport(row, index, excelFile?.name ? `Excel Import: ${excelFile.name}` : 'ATS Sheet Template')));
+    const result = upsertLocalCandidates(syncableRows.map((row, index) => ({
+      ...templateRowToImport(row, index, excelFile?.name ? `Excel Import: ${excelFile.name}` : 'ATS Sheet Template'),
+      recruiter: row.owner.trim() || currentOwner,
+      owner: row.owner.trim() || currentOwner,
+    })));
     setNotice(`${syncableRows.length} spreadsheet row${syncableRows.length === 1 ? '' : 's'} synced to ATS. ${result.imported} new candidate${result.imported === 1 ? '' : 's'} were created and existing matches were updated in place.`);
   }
 
   function runSchedule(schedule: AutopilotSchedule) {
     const job = jobs.find(item => item.id === schedule.jobId) ?? selectedJob;
     const rows = candidateRowsForAutopilot(schedule, job);
-    const result = upsertLocalCandidates(rows.map(row => ({ ...row, source: `Autopilot: ${schedule.boards[0] ?? 'Authorized source'}`, recruiter: 'SuperUser' })));
+    const result = upsertLocalCandidates(rows.map(row => ({ ...row, source: `Autopilot: ${schedule.boards[0] ?? 'Authorized source'}`, recruiter: currentOwner, owner: currentOwner })));
     writeArray(AUTOPILOT_EMAILS_KEY, [{ id: `digest-${Date.now()}`, scheduleId: schedule.id, to: 'scheduler@eventus.local', subject: `Autopilot fetched ${rows.length} profiles for ${job.title}`, body: emailTable(rows), createdAt: new Date().toISOString() }, ...readArray<any>(AUTOPILOT_EMAILS_KEY)].slice(0, 50));
     const next = readArray<AutopilotSchedule>(AUTOPILOT_SCHEDULES_KEY).map(item => item.id === schedule.id ? { ...item, status: 'Completed' as const, lastRunAt: new Date().toISOString() } : item);
     persistSchedules(next);
