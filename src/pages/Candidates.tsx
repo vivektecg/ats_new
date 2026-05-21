@@ -7,7 +7,6 @@ import {
   Search, Send, ShieldCheck, Sparkles, Target, Trash2, Upload, UserRound, X,
 } from 'lucide-react';
 import { getAllJobs, getAllSubmissions } from '@/lib/localRecords';
-import { archiveAtsUpload } from '@/lib/archiveApi';
 import { ATS_RECORDS_UPDATED_EVENT, LOCAL_CANDIDATES_KEY, normalizeCandidateRecord } from '@/lib/atsLocalStore';
 import { saveRows } from '@/lib/atsApi';
 import { getAssignableOwnerNames, getOwnerDisplayName, normalizeOwnerName, SESSION_UPDATED_EVENT } from '@/lib/auth';
@@ -1218,29 +1217,8 @@ function CandidateFormPanel({
                   onChange={event => {
                     const file = event.target.files?.[0];
                     if (!file) return;
-                    void archiveAtsUpload(file, {
-                      entityType: 'candidate-resume',
-                      entityId: form.email.trim() || form.fullName.trim() || 'candidate-form',
-                      collection: 'candidates',
-                    }).then(metadata => {
-                      update('resumeFile', file.name);
-                      update('resumeAttachment', {
-                        fileName: file.name,
-                        fileType: file.type || 'application/octet-stream',
-                        fileSize: file.size,
-                        uploadedAt: metadata.storedAt,
-                        archivePath: metadata.archivePath,
-                        archiveSha256: metadata.sha256,
-                      });
-                    }).catch(() => {
-                      update('resumeFile', file.name);
-                      update('resumeAttachment', {
-                        fileName: file.name,
-                        fileType: file.type || 'application/octet-stream',
-                        fileSize: file.size,
-                        uploadedAt: new Date().toISOString(),
-                      });
-                    });
+                    update('resumeFile', file.name);
+                    update('resumeAttachment', attachmentFromFile(file));
                     event.target.value = '';
                   }}
                 />
@@ -1554,25 +1532,9 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
             onChange={event => {
               const file = event.target.files?.[0];
               if (!file) return;
-              void archiveAtsUpload(file, {
-                entityType: 'candidate-resume',
-                entityId: candidate.id,
-                collection: 'candidates',
-                recordId: candidate.id,
-              }).then(metadata => {
-                const next = {
-                  ...attachmentFromFile(file),
-                  archivePath: metadata.archivePath,
-                  archiveSha256: metadata.sha256,
-                  uploadedAt: metadata.storedAt,
-                };
-                setResumeAttachment(next);
-                setFileName(next.fileName);
-              }).catch(() => {
-                const next = attachmentFromFile(file);
-                setResumeAttachment(next);
-                setFileName(next.fileName);
-              });
+              const next = attachmentFromFile(file);
+              setResumeAttachment(next);
+              setFileName(next.fileName);
               event.target.value = '';
             }}
           />
@@ -1615,29 +1577,11 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
                 onChange={event => {
                   const files = Array.from(event.target.files ?? []);
                   if (!files.length) return;
-                  void Promise.all(files.map(async file => {
-                    try {
-                      const metadata = await archiveAtsUpload(file, {
-                        entityType: 'candidate-supporting-document',
-                        entityId: candidate.id,
-                        collection: 'candidates',
-                        recordId: candidate.id,
-                      });
-                      return {
-                        ...attachmentFromFile(file),
-                        archivePath: metadata.archivePath,
-                        archiveSha256: metadata.sha256,
-                        uploadedAt: metadata.storedAt,
-                      };
-                    } catch {
-                      return attachmentFromFile(file);
-                    }
-                  })).then(uploaded => {
-                    const nextNames = [...new Set([...supportingDocumentList, ...uploaded.map(file => file.fileName)])];
-                    setSupportingDocuments(nextNames.join(', '));
-                    setSupportingAttachments(current => [...uploaded, ...current]);
-                    event.target.value = '';
-                  });
+                  const uploaded = files.map(attachmentFromFile);
+                  const nextNames = [...new Set([...supportingDocumentList, ...uploaded.map(file => file.fileName)])];
+                  setSupportingDocuments(nextNames.join(', '));
+                  setSupportingAttachments(current => [...uploaded, ...current]);
+                  event.target.value = '';
                 }}
               />
             </label>
