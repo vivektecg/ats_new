@@ -2,7 +2,7 @@ import { FormEvent, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ArrowRight, Eye, EyeOff, KeyRound, Lock, ShieldCheck } from 'lucide-react';
-import { completePasswordReset } from '@/lib/auth';
+import { completeAuthenticatedPasswordChange, completePasswordReset, resolveSession } from '@/lib/auth';
 import { BRAND_LOGO, BRAND_NAME, BRAND_TAGLINE } from '@/lib/brand';
 
 export default function ResetPassword() {
@@ -10,6 +10,9 @@ export default function ResetPassword() {
   const [searchParams] = useSearchParams();
   const email = useMemo(() => searchParams.get('email') ?? '', [searchParams]);
   const token = useMemo(() => searchParams.get('token') ?? '', [searchParams]);
+  const mode = useMemo(() => searchParams.get('mode') ?? '', [searchParams]);
+  const session = resolveSession();
+  const isForcedChange = mode === 'force';
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -21,16 +24,24 @@ export default function ResetPassword() {
     setNotice('');
     setError('');
 
-    if (!email || !token) {
-      setError('Missing reset email or token. Please request a fresh reset link.');
-      return;
-    }
     if (password !== confirmPassword) {
       setError('Passwords do not match.');
       return;
     }
 
-    const result = completePasswordReset(email, token, password);
+    if (isForcedChange && session?.role !== 'User') {
+      setError('Please sign in with your temporary password before setting a new one.');
+      return;
+    }
+
+    if (!isForcedChange && (!email || !token)) {
+      setError('Missing reset email or token. Please request a fresh reset link.');
+      return;
+    }
+
+    const result = isForcedChange
+      ? completeAuthenticatedPasswordChange(password)
+      : completePasswordReset(email, token, password);
     if (!result.ok) {
       setError(result.message);
       return;
@@ -60,10 +71,12 @@ export default function ResetPassword() {
         <div className="mb-5 rounded-xl border border-blue-500/20 bg-blue-500/10 px-4 py-3">
           <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-blue-100">
             <ShieldCheck size={16} />
-            Create your new password
+            {isForcedChange ? 'Change your temporary password' : 'Create your new password'}
           </div>
           <p className="text-xs leading-relaxed text-blue-100/65">
-            This link updates the ATS login for {email || 'the selected user'} and signs you in after success.
+            {isForcedChange
+              ? 'Your SuperUser has given you a temporary password. Set your own password now to continue into the ATS.'
+              : `This link updates the ATS login for ${email || 'the selected user'} and signs you in after success.`}
           </p>
         </div>
 

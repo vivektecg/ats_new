@@ -530,6 +530,51 @@ export function completePasswordReset(email: string, token: string, newPassword:
   return { ok: true, message: 'Password updated. You are signed in now.' };
 }
 
+function resolveManagedUser(session: AuthSession | null) {
+  if (!session || session.role !== 'User') return null;
+  return getUsers().find(savedUser => savedUser.id === session.id && savedUser.email === session.email) ?? null;
+}
+
+export function requiresPasswordChange(session: AuthSession | null = resolveSession()) {
+  const user = resolveManagedUser(session);
+  return Boolean(user?.mustChangePassword);
+}
+
+export function completeAuthenticatedPasswordChange(newPassword: string) {
+  const session = resolveSession();
+  const user = resolveManagedUser(session);
+  if (!session || !user) {
+    return { ok: false, message: 'You must sign in before changing your password.' };
+  }
+  if (!user.active || user.passwordBlocked) {
+    return { ok: false, message: 'This user is disabled or password-blocked.' };
+  }
+  if (newPassword.length < 10) {
+    return { ok: false, message: 'Password must be at least 10 characters.' };
+  }
+
+  const now = new Date().toISOString();
+  saveUsers(getUsers().map(row => row.id === user.id ? {
+    ...row,
+    passwordHash: encodePassword(newPassword),
+    mustChangePassword: false,
+    passwordUpdatedAt: now,
+    updatedAt: now,
+  } : row));
+
+  saveSession({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    permissions: user.permissions,
+    loginAt: session.loginAt,
+    avatarUrl: user.avatarUrl,
+  });
+
+  return { ok: true, message: 'Password updated. You can continue to the ATS now.' };
+}
+
 export function resolveSession(): AuthSession | null {
   const session = getSession();
   if (!session) return null;

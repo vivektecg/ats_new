@@ -271,11 +271,10 @@ export default function UserManagement() {
     setUsers(nextUsers);
     saveUsers(nextUsers);
     if (target) {
-      const reset = requestPasswordReset(target.email, session?.email ?? 'SuperUser');
       setUsers(getUsers());
-      setLatestResetLink(reset.resetUrl ?? '');
-      setMessage(reset.ok ? 'Temporary password saved and password reset email link queued.' : reset.message);
-      setError(reset.ok ? '' : reset.message);
+      setLatestResetLink('');
+      setMessage(`Temporary password saved for ${target.name}. They must sign in with it once and set their own password.`);
+      setError('');
       setSelectedPassword('');
       return;
     }
@@ -329,12 +328,11 @@ export default function UserManagement() {
     const nextUsers = [user, ...users];
     setUsers(nextUsers);
     saveUsers(nextUsers);
-    const reset = requestPasswordReset(email, session?.email ?? 'SuperUser');
     setUsers(getUsers());
-    setLatestResetLink(reset.resetUrl ?? '');
     setSelectedUserId(user.id);
     setForm({ name: '', email: '', password: '', avatarUrl: '', active: true, permissions: defaultUserPermissions });
-    setMessage('New user login created. Temporary password saved and reset email link queued.');
+    setLatestResetLink('');
+    setMessage('New user login created. Share the temporary password with the user so they can sign in and create their own password.');
   };
 
   if (session?.role !== 'SuperUser') {
@@ -831,7 +829,7 @@ export default function UserManagement() {
                     onClick={() => resetPassword(selectedUser.id, selectedPassword)}
                     className="w-full rounded-lg border border-white/10 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/5"
                   >
-                    Save temp password & email reset link
+                    Save temporary password
                   </button>
                   <button
                     type="button"

@@ -1,6 +1,6 @@
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { LockKeyhole } from 'lucide-react';
-import { canAccess, resolveSession, sectionForPath } from '@/lib/auth';
+import { canAccess, requiresPasswordChange, resolveSession, sectionForPath } from '@/lib/auth';
 
 export function RequireAuth() {
   const location = useLocation();
@@ -8,6 +8,9 @@ export function RequireAuth() {
   const session = resolveSession();
 
   if (!session) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (requiresPasswordChange(session)) {
+    return <Navigate to="/reset-password?mode=force" replace />;
+  }
 
   const section = sectionForPath(location.pathname);
   if (!canAccess(session, section)) {

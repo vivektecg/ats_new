@@ -141,8 +141,16 @@ export default function Login() {
       return;
     }
     if (user.mustChangePassword) {
-      sendPasswordReset(user.email, 'temporary-password-login');
-      setError('A password update is required. A reset link has been queued for this user email.');
+      saveSession({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        permissions: user.permissions,
+        loginAt: new Date().toISOString(),
+        avatarUrl: user.avatarUrl,
+      });
+      navigate('/reset-password?mode=force', { replace: true });
       return;
     }
 
