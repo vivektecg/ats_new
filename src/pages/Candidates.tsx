@@ -870,6 +870,8 @@ export default function Candidates() {
           title="Add Candidate"
           initial={createEmptyForm(sessionOwner)}
           ownerOptions={ownerOptions}
+          lockOwnerToSession
+          sessionOwner={sessionOwner}
           submitLabel="Add Candidate"
           onClose={() => setAction(null)}
           onSubmit={form => upsertCandidate(form)}
@@ -1108,6 +1110,8 @@ function CandidateFormPanel({
   title,
   initial,
   ownerOptions,
+  lockOwnerToSession = false,
+  sessionOwner = 'SuperUser',
   submitLabel,
   onClose,
   onSubmit,
@@ -1115,6 +1119,8 @@ function CandidateFormPanel({
   title: string;
   initial: CandidateFormState;
   ownerOptions: string[];
+  lockOwnerToSession?: boolean;
+  sessionOwner?: string;
   submitLabel: string;
   onClose: () => void;
   onSubmit: (form: CandidateFormState) => void;
@@ -1126,6 +1132,11 @@ function CandidateFormPanel({
     setForm(initial);
     setError('');
   }, [initial]);
+
+  useEffect(() => {
+    if (!lockOwnerToSession) return;
+    setForm(previous => previous.owner === sessionOwner ? previous : { ...previous, owner: sessionOwner });
+  }, [lockOwnerToSession, sessionOwner]);
 
   function update<K extends keyof CandidateFormState>(key: K, value: CandidateFormState[K]) {
     setForm(previous => ({ ...previous, [key]: value }));
@@ -1141,7 +1152,7 @@ function CandidateFormPanel({
       setError('Resume upload is required before saving a candidate.');
       return;
     }
-    onSubmit(form);
+    onSubmit(lockOwnerToSession ? { ...form, owner: sessionOwner } : form);
   }
 
   return (
@@ -1173,7 +1184,11 @@ function CandidateFormPanel({
           <SelectField label="Relocation Preference" value={form.relocationPreference} options={['Open to relocate', 'Remote only', 'Hybrid only', 'Local only', 'Not open to relocate']} onChange={value => update('relocationPreference', value)} />
           <SelectField label="Availability" value={form.availability} options={['Immediately', '1 week', '2 weeks', '3 weeks', '1 month', 'Placed']} onChange={value => update('availability', value)} />
           <SelectField label="Source" value={form.source} options={sources} onChange={value => update('source', value)} />
-          <SelectField label="Owner" value={form.owner} options={ownerOptions} onChange={value => update('owner', value)} />
+          {lockOwnerToSession ? (
+            <Field label="Owner" value={sessionOwner} disabled onChange={() => undefined} />
+          ) : (
+            <SelectField label="Owner" value={form.owner} options={ownerOptions} onChange={value => update('owner', value)} />
+          )}
           <SelectField label="Status" value={form.status} options={allStatuses} onChange={value => update('status', value as CandidateStatus)} />
           <Field label="Education" value={form.education} onChange={value => update('education', value)} />
           <Field label="Certifications" value={form.certifications} onChange={value => update('certifications', value)} />
