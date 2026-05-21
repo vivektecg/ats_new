@@ -29,14 +29,15 @@ import {
   AppUser,
   defaultUserPermissions,
   encodePassword,
+  getSuperUserProfile,
   getUsers,
   requestPasswordReset,
   resolveSession,
   saveSession,
+  saveSuperUserProfile,
   saveUsers,
   SectionKey,
   setSuperUserPassword,
-  SUPERUSER_PROFILE_KEY,
   verifySuperUserPassword,
 } from '@/lib/auth';
 import { BRAND_LEGAL_NAME, BRAND_NAME } from '@/lib/brand';
@@ -79,24 +80,14 @@ function readImageFile(file: File, onLoad: (dataUrl: string) => void, onError: (
 }
 
 function loadSuperUserProfile(session: ReturnType<typeof resolveSession>) {
-  try {
-    const saved = JSON.parse(window.localStorage.getItem(SUPERUSER_PROFILE_KEY) || '{}');
-    return {
-      name: saved.name ?? session?.name ?? 'SuperUser',
-      email: saved.email ?? session?.email ?? 'superuser@eventus.local',
-      phone: saved.phone ?? '',
-      title: saved.title ?? 'System Owner',
-      avatarUrl: saved.avatarUrl ?? session?.avatarUrl ?? '',
-    };
-  } catch {
-    return {
-      name: session?.name ?? 'SuperUser',
-      email: session?.email ?? 'superuser@eventus.local',
-      phone: '',
-      title: 'System Owner',
-      avatarUrl: session?.avatarUrl ?? '',
-    };
-  }
+  const saved = getSuperUserProfile();
+  return {
+    name: saved.name ?? session?.name ?? 'SuperUser',
+    email: saved.email ?? session?.email ?? 'vivekk@theeventusconsultinggroup.com',
+    phone: saved.phone ?? '',
+    title: saved.title ?? 'System Owner',
+    avatarUrl: saved.avatarUrl ?? session?.avatarUrl ?? '',
+  };
 }
 
 export default function UserManagement() {
@@ -131,9 +122,21 @@ export default function UserManagement() {
   const sensitiveSections = allSections.filter(section => section.sensitive && section.key !== 'users');
 
   function saveSuperProfile() {
-    window.localStorage.setItem(SUPERUSER_PROFILE_KEY, JSON.stringify(superProfile));
+    const nextProfile = saveSuperUserProfile(superProfile);
+    setSuperProfile({
+      name: nextProfile.name,
+      email: nextProfile.email,
+      phone: nextProfile.phone ?? '',
+      title: nextProfile.title ?? 'System Owner',
+      avatarUrl: nextProfile.avatarUrl ?? '',
+    });
     if (session) {
-      saveSession({ ...session, name: superProfile.name, email: superProfile.email, avatarUrl: superProfile.avatarUrl || undefined });
+      saveSession({
+        ...session,
+        name: nextProfile.name,
+        email: nextProfile.email,
+        avatarUrl: nextProfile.avatarUrl || undefined,
+      });
     }
     setMessage('SuperUser profile updated.');
     setError('');

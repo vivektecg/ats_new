@@ -31,8 +31,19 @@ const ATS_COLLECTIONS = new Set([
   'integrations',
   'integrationSyncLogs',
 ]);
+const AUTH_COLLECTIONS = new Set([
+  'authUsers',
+  'authMetadata',
+  'passwordResetRequests',
+  'passwordEmailOutbox',
+]);
 const atsStore = createAtsStore({
   collections: ATS_COLLECTIONS,
+  dataDir: DATA_DIR,
+  jsonFile: ATS_DB,
+});
+const authStore = createAtsStore({
+  collections: AUTH_COLLECTIONS,
   dataDir: DATA_DIR,
   jsonFile: ATS_DB,
 });
@@ -47,6 +58,16 @@ const ALLOWED_MODULES = new Set([
   'recruiter-assistant',
 ]);
 const rateLimit = new Map();
+const DEFAULT_SUPERUSER = {
+  id: 'superuser-profile',
+  name: 'SuperUser',
+  email: 'vivekk@theeventusconsultinggroup.com',
+  passwordHash: Buffer.from('eventus:Manvikk1981@', 'utf8').toString('base64'),
+  avatarUrl: '',
+  phone: '',
+  title: 'System Owner',
+  updatedAt: '2026-05-21T00:00:00.000Z',
+};
 
 function json(response, status, body) {
   response.writeHead(status, {
@@ -124,6 +145,78 @@ async function readAtsDb() {
 
 async function writeAtsDb(db) {
   await atsStore.writeDb(db);
+}
+
+function normalizeAuthRows(rows) {
+  return Array.isArray(rows) ? rows.filter(Boolean) : [];
+}
+
+async function ensureAuthState() {
+  const [users, metadataRows, passwordResetRequests, passwordEmailOutbox] = await Promise.all([
+    authStore.readCollection('authUsers'),
+    authStore.readCollection('authMetadata'),
+    authStore.readCollection('passwordResetRequests'),
+    authStore.readCollection('passwordEmailOutbox'),
+  ]);
+
+  const currentMetadata = normalizeAuthRows(metadataRows)[0] ?? {};
+  const mergedMetadata = {
+    ...DEFAULT_SUPERUSER,
+    ...currentMetadata,
+    id: 'superuser-profile',
+    email: String(currentMetadata.email || DEFAULT_SUPERUSER.email).toLowerCase(),
+    passwordHash: String(currentMetadata.passwordHash || DEFAULT_SUPERUSER.passwordHash),
+    name: String(currentMetadata.name || DEFAULT_SUPERUSER.name),
+    title: String(currentMetadata.title || DEFAULT_SUPERUSER.title),
+    phone: String(currentMetadata.phone || ''),
+    avatarUrl: String(currentMetadata.avatarUrl || ''),
+    updatedAt: String(currentMetadata.updatedAt || new Date().toISOString()),
+  };
+
+  const metadataChanged = JSON.stringify(currentMetadata) !== JSON.stringify(mergedMetadata);
+  if (metadataChanged) {
+    await authStore.replaceCollection('authMetadata', [mergedMetadata]);
+  }
+
+  return {
+    users: normalizeAuthRows(users),
+    superUser: mergedMetadata,
+    passwordResetRequests: normalizeAuthRows(passwordResetRequests),
+    passwordEmailOutbox: normalizeAuthRows(passwordEmailOutbox),
+  };
+}
+
+async function handleAuthState(request, response) {
+  if (request.method === 'GET') {
+    return json(response, 200, await ensureAuthState());
+  }
+
+  if (request.method === 'PUT') {
+    const body = JSON.parse(await readBody(request) || '{}');
+    const superUser = {
+      ...DEFAULT_SUPERUSER,
+      ...(body.superUser && typeof body.superUser === 'object' ? body.superUser : {}),
+      id: 'superuser-profile',
+      email: String(body?.superUser?.email || DEFAULT_SUPERUSER.email).toLowerCase(),
+      passwordHash: String(body?.superUser?.passwordHash || DEFAULT_SUPERUSER.passwordHash),
+      name: String(body?.superUser?.name || DEFAULT_SUPERUSER.name),
+      title: String(body?.superUser?.title || DEFAULT_SUPERUSER.title),
+      phone: String(body?.superUser?.phone || ''),
+      avatarUrl: String(body?.superUser?.avatarUrl || ''),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await Promise.all([
+      authStore.replaceCollection('authUsers', normalizeAuthRows(body.users)),
+      authStore.replaceCollection('authMetadata', [superUser]),
+      authStore.replaceCollection('passwordResetRequests', normalizeAuthRows(body.passwordResetRequests)),
+      authStore.replaceCollection('passwordEmailOutbox', normalizeAuthRows(body.passwordEmailOutbox)),
+    ]);
+
+    return json(response, 200, await ensureAuthState());
+  }
+
+  return json(response, 405, { error: 'Method not allowed' });
 }
 
 function collectionFromUrl(url = '') {
@@ -604,6 +697,7 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return json(response, 204, {});
   const pathname = pathnameFromUrl(request.url);
   if (request.method === 'GET' && pathname === '/healthz') return json(response, 200, { ok: true, storage: atsStore.mode });
+  if (pathname === '/api/auth/state' && (request.method === 'GET' || request.method === 'PUT')) return handleAuthState(request, response);
   if (request.method === 'POST' && pathname === '/api/ai/run') return handleAI(request, response);
   if (request.method === 'GET' && pathname === '/api/ai/audit') return handleAudit(request, response);
   if (pathname === '/api/ats/submissions/submit' && request.method === 'POST') return handleSubmissionSubmit(request, response);

@@ -16,15 +16,13 @@ import {
 import { BeamBackground } from '@/components/ui/beam-background';
 import {
   allSections,
-  bootstrapSuperUser,
   canAccess,
+  getSuperUserProfile,
   getUsers,
-  hasBootstrappedSuperUser,
   makeSuperUserSession,
   requestPasswordReset,
   saveSession,
   sectionForPath,
-  SUPERUSER_ID,
   verifyPassword,
   verifySuperUserPassword,
 } from '@/lib/auth';
@@ -65,13 +63,11 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const from = (location.state as { from?: string } | null)?.from ?? '/dashboard';
-  const [isSuperUserBootstrapped, setIsSuperUserBootstrapped] = useState(() => hasBootstrappedSuperUser());
   const [mode, setMode] = useState<LoginMode>('admin');
-  const [adminId, setAdminId] = useState(SUPERUSER_ID);
+  const superUserProfile = getSuperUserProfile();
+  const [adminEmail, setAdminEmail] = useState(superUserProfile.email);
   const [adminPassword, setAdminPassword] = useState('');
-  const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
-  const [adminBootstrapEmail, setAdminBootstrapEmail] = useState('superuser@eventus.local');
-  const [userEmail, setUserEmail] = useState('');
+  const [userIdentifier, setUserIdentifier] = useState('');
   const [userPassword, setUserPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -89,7 +85,7 @@ export default function Login() {
   };
 
   const sendPasswordReset = (targetEmail?: string, requestedBy = 'self-service') => {
-    const email = (targetEmail || resetEmail || userEmail || 'superuser@eventus.local').trim().toLowerCase();
+    const email = (targetEmail || resetEmail || userIdentifier || superUserProfile.email).trim().toLowerCase();
     const result = requestPasswordReset(email, requestedBy);
     setResetNotice(result.message);
     setResetLink(result.resetUrl ?? '');
@@ -109,31 +105,9 @@ export default function Login() {
     setError('');
 
     if (mode === 'admin') {
-      if (!isSuperUserBootstrapped) {
-        if (adminId.trim() !== SUPERUSER_ID) {
-          setError('Use the default Admin ID of SuperUser for the first setup.');
-          return;
-        }
-        if (adminPassword.length < 10) {
-          setError('Create a SuperUser password with at least 10 characters.');
-          return;
-        }
-        if (adminPassword !== adminPasswordConfirm) {
-          setError('SuperUser passwords do not match.');
-          return;
-        }
-        bootstrapSuperUser({
-          password: adminPassword,
-          email: adminBootstrapEmail,
-          name: 'SuperUser',
-        });
-        setIsSuperUserBootstrapped(true);
-        await finishLogin(from);
-        return;
-      }
-
-      if (adminId.trim() !== SUPERUSER_ID || !verifySuperUserPassword(adminPassword)) {
-        setError('Invalid SuperUser ID or password.');
+      const normalizedAdminEmail = adminEmail.trim().toLowerCase();
+      if (normalizedAdminEmail !== superUserProfile.email.toLowerCase() || !verifySuperUserPassword(adminPassword)) {
+        setError('Invalid SuperUser email or password.');
         return;
       }
       saveSession(makeSuperUserSession());
@@ -141,10 +115,12 @@ export default function Login() {
       return;
     }
 
-    const email = userEmail.trim().toLowerCase();
-    const user = getUsers().find(savedUser => savedUser.email.toLowerCase() === email);
+    const identifier = userIdentifier.trim().toLowerCase();
+    const user = getUsers().find(
+      savedUser => savedUser.email.toLowerCase() === identifier || savedUser.id.toLowerCase() === identifier
+    );
     if (!user || !verifyPassword(user.passwordHash, userPassword)) {
-      setError('Invalid user email or password.');
+      setError('Invalid user ID/email or password.');
       return;
     }
     if (!user.active) {
@@ -324,39 +300,38 @@ export default function Login() {
               <>
                 <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2.5">
                   <p className="text-xs font-semibold text-blue-200">
-                    {isSuperUserBootstrapped ? 'SuperUser administrator' : 'Fresh deployment setup'}
+                    SuperUser administrator
                   </p>
                   <p className="mt-0.5 text-xs text-blue-100/60">
-                    {isSuperUserBootstrapped
-                      ? 'Only this role can create users and disable protected ATS sections.'
-                      : 'This app starts with no default admin password. Create the first SuperUser credential now.'}
+                    Only this role can create user credentials and manage protected ATS sections.
                   </p>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Admin ID</label>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">SuperUser Email</label>
                   <div className="relative">
-                    <IdCard size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                    <Mail size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
                     <input
-                      value={adminId}
-                      onChange={event => setAdminId(event.target.value)}
+                      type="text"
+                      inputMode="email"
+                      autoComplete="username"
+                      value={adminEmail}
+                      onChange={event => setAdminEmail(event.target.value)}
                       className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 focus:bg-white/8 transition-all"
-                      placeholder="SuperUser"
+                      placeholder={superUserProfile.email}
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1.5">
-                    {isSuperUserBootstrapped ? 'Admin Password' : 'Create Admin Password'}
-                  </label>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">SuperUser Password</label>
                   <div className="relative">
                     <Lock size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
                     <input
                       type={showPass ? 'text' : 'password'}
                       value={adminPassword}
                       onChange={event => setAdminPassword(event.target.value)}
-                      placeholder={isSuperUserBootstrapped ? 'Enter SuperUser password' : 'Minimum 10 characters'}
+                      placeholder="Enter SuperUser password"
                       className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-10 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 focus:bg-white/8 transition-all"
                     />
                     <button
@@ -368,54 +343,19 @@ export default function Login() {
                     </button>
                   </div>
                 </div>
-
-                {!isSuperUserBootstrapped && (
-                  <>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Confirm Password</label>
-                      <div className="relative">
-                        <KeyRound size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                        <input
-                          type={showPass ? 'text' : 'password'}
-                          value={adminPasswordConfirm}
-                          onChange={event => setAdminPasswordConfirm(event.target.value)}
-                          placeholder="Re-enter the admin password"
-                          className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 focus:bg-white/8 transition-all"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1.5">Recovery Email</label>
-                      <div className="relative">
-                        <Mail size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                        <input
-                          type="text"
-                          inputMode="email"
-                          autoComplete="email"
-                          value={adminBootstrapEmail}
-                          onChange={event => setAdminBootstrapEmail(event.target.value)}
-                          placeholder="superuser@company.com"
-                          className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 focus:bg-white/8 transition-all"
-                        />
-                      </div>
-                    </div>
-                  </>
-                )}
               </>
             ) : (
               <>
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1.5">User Email</label>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">User ID or Email</label>
                   <div className="relative">
-                    <Mail size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                    <IdCard size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
                     <input
                       type="text"
-                      inputMode="email"
                       autoComplete="username"
-                      value={userEmail}
-                      onChange={event => setUserEmail(event.target.value)}
-                      placeholder="you@company.com"
+                      value={userIdentifier}
+                      onChange={event => setUserIdentifier(event.target.value)}
+                      placeholder="user-id or you@company.com"
                       className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 focus:bg-white/8 transition-all"
                     />
                   </div>
@@ -458,7 +398,7 @@ export default function Login() {
               {loading ? (
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : (
-                <>{isSuperUserBootstrapped || mode === 'user' ? 'Sign In' : 'Create Admin'} <ArrowRight size={15} /></>
+                <>Sign In <ArrowRight size={15} /></>
               )}
             </button>
           </form>
@@ -471,7 +411,7 @@ export default function Login() {
                 inputMode="email"
                 value={resetEmail}
                 onChange={event => setResetEmail(event.target.value)}
-                placeholder={mode === 'admin' ? 'superuser@eventus.local' : 'user@company.com'}
+                placeholder={mode === 'admin' ? superUserProfile.email : 'user-id or user@company.com'}
                 className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white outline-none focus:border-blue-500/60"
               />
               <button

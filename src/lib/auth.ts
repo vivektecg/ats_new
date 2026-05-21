@@ -83,6 +83,24 @@ export interface PasswordEmailOutboxItem {
   createdAt: string;
 }
 
+export interface SuperUserProfile {
+  id?: string;
+  name: string;
+  email: string;
+  passwordHash?: string;
+  phone?: string;
+  title?: string;
+  avatarUrl?: string;
+  updatedAt?: string;
+}
+
+interface AuthBackendState {
+  users: AppUser[];
+  superUser: SuperUserProfile;
+  passwordResetRequests: PasswordResetRequest[];
+  passwordEmailOutbox: PasswordEmailOutboxItem[];
+}
+
 export const allSections: Array<{ key: SectionKey; label: string; path: string; sensitive?: boolean }> = [
   { key: 'dashboard', label: 'Dashboard', path: '/dashboard' },
   { key: 'candidates', label: 'Candidates', path: '/candidates', sensitive: true },
@@ -128,6 +146,127 @@ export const defaultUserPermissions: SectionKey[] = [
 ];
 
 export const superUserPermissions = allSections.map(section => section.key);
+const defaultSuperUserProfile: SuperUserProfile = {
+  id: 'superuser-profile',
+  name: 'SuperUser',
+  email: 'vivekk@theeventusconsultinggroup.com',
+  passwordHash: encodePassword('Manvikk1981@'),
+  phone: '',
+  title: 'System Owner',
+  avatarUrl: '',
+};
+let authHydrationPromise: Promise<void> | null = null;
+
+function authApiRoot() {
+  return '/api/auth/state';
+}
+
+function normalizeSuperUserProfile(profile: Partial<SuperUserProfile> | null | undefined): SuperUserProfile {
+  return {
+    ...defaultSuperUserProfile,
+    ...(profile ?? {}),
+    id: 'superuser-profile',
+    email: String(profile?.email || defaultSuperUserProfile.email).toLowerCase(),
+    passwordHash: String(profile?.passwordHash || defaultSuperUserProfile.passwordHash),
+    name: String(profile?.name || defaultSuperUserProfile.name),
+    phone: String(profile?.phone || ''),
+    title: String(profile?.title || defaultSuperUserProfile.title || ''),
+    avatarUrl: String(profile?.avatarUrl || ''),
+    updatedAt: profile?.updatedAt,
+  };
+}
+
+function readLocalSuperUserProfile(): SuperUserProfile {
+  try {
+    return normalizeSuperUserProfile(JSON.parse(window.localStorage.getItem(SUPERUSER_PROFILE_KEY) || '{}'));
+  } catch {
+    return normalizeSuperUserProfile(null);
+  }
+}
+
+function writeLocalSuperUserProfile(profile: SuperUserProfile) {
+  window.localStorage.setItem(SUPERUSER_PROFILE_KEY, JSON.stringify(profile));
+  if (profile.passwordHash) {
+    window.localStorage.setItem(SUPERUSER_PASSWORD_HASH_KEY, profile.passwordHash);
+  }
+}
+
+function readLocalAuthState(): AuthBackendState {
+  return {
+    users: getUsers(),
+    superUser: readLocalSuperUserProfile(),
+    passwordResetRequests: getPasswordResetRequests(),
+    passwordEmailOutbox: getPasswordEmailOutbox(),
+  };
+}
+
+function writeLocalAuthState(state: Partial<AuthBackendState>) {
+  if (state.users) {
+    window.localStorage.setItem(USERS_KEY, JSON.stringify(state.users));
+  }
+  if (state.superUser) {
+    writeLocalSuperUserProfile(normalizeSuperUserProfile(state.superUser));
+  }
+  if (state.passwordResetRequests) {
+    writeArray(PASSWORD_RESET_REQUESTS_KEY, state.passwordResetRequests);
+  }
+  if (state.passwordEmailOutbox) {
+    writeArray(PASSWORD_EMAIL_OUTBOX_KEY, state.passwordEmailOutbox);
+  }
+}
+
+async function requestAuthState(init?: RequestInit): Promise<AuthBackendState | null> {
+  try {
+    const response = await fetch(authApiRoot(), {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!response.ok) return null;
+    const body = await response.json() as Partial<AuthBackendState>;
+    return {
+      users: Array.isArray(body.users) ? body.users : [],
+      superUser: normalizeSuperUserProfile(body.superUser),
+      passwordResetRequests: Array.isArray(body.passwordResetRequests) ? body.passwordResetRequests : [],
+      passwordEmailOutbox: Array.isArray(body.passwordEmailOutbox) ? body.passwordEmailOutbox : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function persistAuthState() {
+  if (typeof window === 'undefined') return;
+  const payload = readLocalAuthState();
+  await requestAuthState({
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+function queuePersistAuthState() {
+  if (typeof window === 'undefined') return;
+  void persistAuthState();
+}
+
+export async function hydrateAuthState() {
+  if (typeof window === 'undefined') return;
+  const state = await requestAuthState();
+  if (!state) return;
+  writeLocalAuthState(state);
+}
+
+export function ensureAuthHydrated() {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (!authHydrationPromise) {
+    authHydrationPromise = hydrateAuthState().finally(() => {
+      authHydrationPromise = null;
+    });
+  }
+  return authHydrationPromise;
+}
 
 export function getSession(): AuthSession | null {
   try {
@@ -164,6 +303,7 @@ export function getUsers(): AppUser[] {
 export function saveUsers(users: AppUser[]) {
   window.localStorage.setItem(USERS_KEY, JSON.stringify(users));
   notifySessionUpdated();
+  queuePersistAuthState();
 }
 
 export function encodePassword(password: string) {
@@ -195,16 +335,11 @@ function randomToken() {
 }
 
 function superUserEmail() {
-  try {
-    const profile = JSON.parse(window.localStorage.getItem(SUPERUSER_PROFILE_KEY) || '{}');
-    return String(profile.email || 'superuser@eventus.local').toLowerCase();
-  } catch {
-    return 'superuser@eventus.local';
-  }
+  return readLocalSuperUserProfile().email.toLowerCase();
 }
 
 export function getSuperUserPasswordHash() {
-  return window.localStorage.getItem(SUPERUSER_PASSWORD_HASH_KEY);
+  return window.localStorage.getItem(SUPERUSER_PASSWORD_HASH_KEY) || readLocalSuperUserProfile().passwordHash || null;
 }
 
 export function hasBootstrappedSuperUser() {
@@ -212,8 +347,14 @@ export function hasBootstrappedSuperUser() {
 }
 
 export function setSuperUserPassword(password: string) {
-  window.localStorage.setItem(SUPERUSER_PASSWORD_HASH_KEY, encodePassword(password));
+  const nextProfile = {
+    ...readLocalSuperUserProfile(),
+    passwordHash: encodePassword(password),
+    updatedAt: new Date().toISOString(),
+  };
+  writeLocalSuperUserProfile(nextProfile);
   notifySessionUpdated();
+  queuePersistAuthState();
 }
 
 export function verifySuperUserPassword(password: string) {
@@ -223,14 +364,16 @@ export function verifySuperUserPassword(password: string) {
 export function bootstrapSuperUser(input: { password: string; name?: string; email?: string }) {
   const now = new Date().toISOString();
   setSuperUserPassword(input.password);
-  const profile = {
+  const profile = normalizeSuperUserProfile({
+    ...readLocalSuperUserProfile(),
     name: input.name?.trim() || 'SuperUser',
-    email: input.email?.trim().toLowerCase() || 'superuser@eventus.local',
+    email: input.email?.trim().toLowerCase() || defaultSuperUserProfile.email,
     updatedAt: now,
-  };
-  window.localStorage.setItem(SUPERUSER_PROFILE_KEY, JSON.stringify(profile));
+  });
+  writeLocalSuperUserProfile(profile);
   const session = makeSuperUserSession();
   saveSession(session);
+  queuePersistAuthState();
   return session;
 }
 
@@ -244,25 +387,30 @@ export function getPasswordEmailOutbox() {
 
 function savePasswordResetRequests(rows: PasswordResetRequest[]) {
   writeArray(PASSWORD_RESET_REQUESTS_KEY, rows);
+  queuePersistAuthState();
 }
 
 function savePasswordEmailOutbox(rows: PasswordEmailOutboxItem[]) {
   writeArray(PASSWORD_EMAIL_OUTBOX_KEY, rows);
+  queuePersistAuthState();
 }
 
 function findIdentityByEmail(email: string) {
   const normalized = email.trim().toLowerCase();
   if (!normalized) return null;
-  if (normalized === superUserEmail() || normalized === 'superuser@eventus.local') {
+  if (normalized === superUserEmail()) {
     return {
       userId: SUPERUSER_ID,
       role: 'SuperUser' as const,
-      name: 'SuperUser',
+      name: readLocalSuperUserProfile().name,
       email: superUserEmail(),
       active: true,
     };
   }
-  const user = getUsers().find(savedUser => savedUser.email.toLowerCase() === normalized);
+  const user = getUsers().find(savedUser =>
+    savedUser.email.toLowerCase() === normalized ||
+    savedUser.id.toLowerCase() === normalized
+  );
   return user ? {
     userId: user.id,
     role: user.role,
@@ -421,20 +569,34 @@ export function sectionForPath(pathname: string): SectionKey {
 }
 
 export function makeSuperUserSession(): AuthSession {
-  let savedProfile: Partial<AuthSession> = {};
-  try {
-    savedProfile = JSON.parse(window.localStorage.getItem(SUPERUSER_PROFILE_KEY) || '{}');
-  } catch {
-    savedProfile = {};
-  }
+  const savedProfile = readLocalSuperUserProfile();
 
   return {
     id: SUPERUSER_ID,
-    name: savedProfile.name ?? 'SuperUser',
-    email: savedProfile.email ?? 'superuser@eventus.local',
+    name: savedProfile.name,
+    email: savedProfile.email,
     role: 'SuperUser',
     permissions: superUserPermissions,
     loginAt: new Date().toISOString(),
-    avatarUrl: savedProfile.avatarUrl,
+    avatarUrl: savedProfile.avatarUrl || undefined,
   };
+}
+
+export function getSuperUserProfile() {
+  return readLocalSuperUserProfile();
+}
+
+export function saveSuperUserProfile(profile: Partial<SuperUserProfile>) {
+  const nextProfile = normalizeSuperUserProfile({
+    ...readLocalSuperUserProfile(),
+    ...profile,
+    updatedAt: new Date().toISOString(),
+  });
+  writeLocalSuperUserProfile(nextProfile);
+  if (getSession()?.role === 'SuperUser') {
+    saveSession(makeSuperUserSession(), false);
+  }
+  notifySessionUpdated();
+  queuePersistAuthState();
+  return nextProfile;
 }
