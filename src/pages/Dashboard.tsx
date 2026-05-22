@@ -11,6 +11,7 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
+import type { TooltipProps } from 'recharts';
 import { ATS_RECORDS_UPDATED_EVENT } from '@/lib/atsLocalStore';
 import {
   getAllCandidateDocuments,
@@ -84,7 +85,9 @@ function MetricCard({ metric, index, onClick }: { metric: DashboardMetric; index
   );
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+type ChartTooltipProps = TooltipProps<number, string>;
+
+const CustomTooltip = ({ active, payload, label }: ChartTooltipProps) => {
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-[#0f172a] border border-white/10 rounded-lg px-3 py-2 text-xs shadow-xl">

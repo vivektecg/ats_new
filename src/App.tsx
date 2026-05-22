@@ -22,7 +22,6 @@ const Submissions = lazy(() => import('@/pages/Submissions'));
 const Offers = lazy(() => import('@/pages/Offers'));
 const Onboarding = lazy(() => import('@/pages/Onboarding'));
 const BulkImport = lazy(() => import('@/pages/BulkImport'));
-const EmailCenter = lazy(() => import('@/pages/EmailCenter'));
 const Documents = lazy(() => import('@/pages/Documents'));
 const Pipeline = lazy(() => import('@/pages/Pipeline'));
 const Calendar = lazy(() => import('@/pages/Calendar'));
@@ -80,7 +79,6 @@ export default function App() {
             <Route path="offers" element={withSuspense(<Offers />)} />
             <Route path="onboarding" element={withSuspense(<Onboarding />)} />
             <Route path="imports" element={withSuspense(<BulkImport />)} />
-            <Route path="emails" element={withSuspense(<EmailCenter />)} />
             <Route path="documents" element={withSuspense(<Documents />)} />
             <Route path="pipeline" element={withSuspense(<Pipeline />)} />
             <Route path="calendar" element={withSuspense(<Calendar />)} />

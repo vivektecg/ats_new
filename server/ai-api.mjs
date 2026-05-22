@@ -1,16 +1,47 @@
 import http from 'node:http';
-import { mkdir, appendFile, readFile } from 'node:fs/promises';
+import { mkdir, appendFile, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAtsStore } from './ats-store.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const PROJECT_DIR = join(__dirname, '..');
+
+async function loadDotEnvFile(filePath) {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    raw.split(/\r?\n/).forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) return;
+      const [key, ...valueParts] = trimmed.split('=');
+      const name = key.trim();
+      if (!name || process.env[name] !== undefined) return;
+      let value = valueParts.join('=').trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      process.env[name] = value;
+    });
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn(`Could not load ${filePath}:`, error instanceof Error ? error.message : error);
+    }
+  }
+}
+
+await loadDotEnvFile(join(PROJECT_DIR, '.env'));
+await loadDotEnvFile(join(__dirname, '.env'));
+
 const PORT = Number(process.env.PORT || process.env.AI_API_PORT || 8787);
 const AUDIT_DIR = join(__dirname, 'audit');
 const AUDIT_LOG = join(AUDIT_DIR, 'ai-audit.jsonl');
 const DATA_DIR = join(__dirname, 'data');
 const ATS_DB = join(DATA_DIR, 'ats-db.json');
+const GITHUB_BACKUP_FILE = join(DATA_DIR, 'github-backup.json');
 const DIST_DIR = join(__dirname, '..', 'dist');
 const ATS_COLLECTIONS = new Set([
   'candidates',
@@ -47,6 +78,8 @@ const authStore = createAtsStore({
   dataDir: DATA_DIR,
   jsonFile: ATS_DB,
 });
+let githubBackupTimer = null;
+let githubBackupQueue = Promise.resolve();
 const ALLOWED_MODULES = new Set([
   'resume-parser',
   'jd-parser',
@@ -64,6 +97,17 @@ const DEFAULT_SUPERUSER = {
   email: 'vivekk@theeventusconsultinggroup.com',
   passwordHash: Buffer.from('eventus:Manvikk1981@', 'utf8').toString('base64'),
   avatarUrl: '',
+  outlookEmail: '',
+  outlookConnected: false,
+  emailProvider: 'Outlook',
+  imapHost: 'outlook.office365.com',
+  imapPort: '993',
+  smtpHost: 'smtp.office365.com',
+  smtpPort: '587',
+  signatureText: '',
+  signatureImageUrl: '',
+  signatureTitle: '',
+  signaturePhone: '',
   phone: '',
   title: 'System Owner',
   updatedAt: '2026-05-21T00:00:00.000Z',
@@ -145,6 +189,7 @@ async function readAtsDb() {
 
 async function writeAtsDb(db) {
   await atsStore.writeDb(db);
+  scheduleGithubBackup('ats-data-change');
 }
 
 function normalizeAuthRows(rows) {
@@ -170,6 +215,17 @@ async function ensureAuthState() {
     title: String(currentMetadata.title || DEFAULT_SUPERUSER.title),
     phone: String(currentMetadata.phone || ''),
     avatarUrl: String(currentMetadata.avatarUrl || ''),
+    outlookEmail: String(currentMetadata.outlookEmail || ''),
+    outlookConnected: Boolean(currentMetadata.outlookConnected),
+    emailProvider: ['Gmail', 'IMAP/SMTP'].includes(currentMetadata.emailProvider) ? currentMetadata.emailProvider : 'Outlook',
+    imapHost: String(currentMetadata.imapHost || 'outlook.office365.com'),
+    imapPort: String(currentMetadata.imapPort || '993'),
+    smtpHost: String(currentMetadata.smtpHost || 'smtp.office365.com'),
+    smtpPort: String(currentMetadata.smtpPort || '587'),
+    signatureText: String(currentMetadata.signatureText || ''),
+    signatureImageUrl: String(currentMetadata.signatureImageUrl || ''),
+    signatureTitle: String(currentMetadata.signatureTitle || ''),
+    signaturePhone: String(currentMetadata.signaturePhone || ''),
     updatedAt: String(currentMetadata.updatedAt || new Date().toISOString()),
   };
 
@@ -203,6 +259,17 @@ async function handleAuthState(request, response) {
       title: String(body?.superUser?.title || DEFAULT_SUPERUSER.title),
       phone: String(body?.superUser?.phone || ''),
       avatarUrl: String(body?.superUser?.avatarUrl || ''),
+      outlookEmail: String(body?.superUser?.outlookEmail || ''),
+      outlookConnected: Boolean(body?.superUser?.outlookConnected),
+      emailProvider: ['Gmail', 'IMAP/SMTP'].includes(body?.superUser?.emailProvider) ? body.superUser.emailProvider : 'Outlook',
+      imapHost: String(body?.superUser?.imapHost || 'outlook.office365.com'),
+      imapPort: String(body?.superUser?.imapPort || '993'),
+      smtpHost: String(body?.superUser?.smtpHost || 'smtp.office365.com'),
+      smtpPort: String(body?.superUser?.smtpPort || '587'),
+      signatureText: String(body?.superUser?.signatureText || ''),
+      signatureImageUrl: String(body?.superUser?.signatureImageUrl || ''),
+      signatureTitle: String(body?.superUser?.signatureTitle || ''),
+      signaturePhone: String(body?.superUser?.signaturePhone || ''),
       updatedAt: new Date().toISOString(),
     };
 
@@ -212,6 +279,7 @@ async function handleAuthState(request, response) {
       authStore.replaceCollection('passwordResetRequests', normalizeAuthRows(body.passwordResetRequests)),
       authStore.replaceCollection('passwordEmailOutbox', normalizeAuthRows(body.passwordEmailOutbox)),
     ]);
+    scheduleGithubBackup('auth-state-change');
 
     return json(response, 200, await ensureAuthState());
   }
@@ -226,12 +294,41 @@ function collectionFromUrl(url = '') {
   return { collection, id };
 }
 
-function withUpdatedTimestamp(record) {
+function actorFromRequest(request) {
+  const session = decodeSession(request.headers['x-recruitiq-session'] || request.headers['x-vrecruit-session'] || request.headers['x-eventus-session']);
+  if (!session) return null;
+  return {
+    id: session.id || 'unknown-user',
+    name: session.name || session.email || 'ATS User',
+    email: session.email || '',
+    role: session.role || 'User',
+  };
+}
+
+async function resolveBackendUserName(userId, fallback = 'ATS User') {
+  if (!userId) return fallback;
+  const state = await ensureAuthState();
+  if (userId === 'SuperUser') return state.superUser.name || fallback;
+  const user = state.users.find(row => row.id === userId || row.email === userId);
+  return user?.name || fallback;
+}
+
+function withUpdatedTimestamp(record, actor = null) {
   if (!record || typeof record !== 'object') return record;
   const now = new Date().toISOString();
+  const actorPatch = actor ? {
+    updatedBy: actor.name,
+    updatedByUserId: actor.id,
+    updatedByEmail: actor.email,
+    createdBy: record.createdBy || actor.name,
+    createdByUserId: record.createdByUserId || actor.id,
+    createdByEmail: record.createdByEmail || actor.email,
+  } : {};
   return {
     ...record,
-    updatedAt: record.updatedAt || now,
+    ...actorPatch,
+    createdAt: record.createdAt || now,
+    updatedAt: now,
     lastSyncedAt: now,
   };
 }
@@ -257,21 +354,25 @@ function dedupeSubmissionRows(rows) {
   });
 }
 
-function stampSubmission(row) {
+function stampSubmission(row, actor = null) {
   const now = new Date().toISOString();
   return withUpdatedTimestamp({
     ...row,
+    recruiter: row.recruiter || actor?.name || 'Recruiter',
+    submittedByUserId: row.submittedByUserId || actor?.id,
+    submittedByEmail: row.submittedByEmail || actor?.email,
     id: row.id || `submission-api-${Date.now()}`,
     submittedDate: row.submittedDate || now.slice(0, 10),
     submittedAt: row.submittedAt || now,
     createdAt: row.createdAt || now,
     updatedAt: now,
-  });
+  }, actor);
 }
 
 async function handleAtsCollection(request, response) {
   const route = collectionFromUrl(request.url);
   if (!route) return json(response, 404, { error: 'ATS collection not found' });
+  const actor = actorFromRequest(request);
 
   const db = await readAtsDb();
   const current = Array.isArray(db[route.collection]) ? db[route.collection] : [];
@@ -283,7 +384,7 @@ async function handleAtsCollection(request, response) {
   const body = JSON.parse(await readBody(request) || '{}');
 
   if (request.method === 'PUT') {
-    const rows = Array.isArray(body.rows) ? body.rows.map(withUpdatedTimestamp) : [];
+    const rows = Array.isArray(body.rows) ? body.rows.map(row => withUpdatedTimestamp(row, actor)) : [];
     db[route.collection] = route.collection === 'submissions' ? dedupeSubmissionRows(rows) : rows;
     await writeAtsDb(db);
     return json(response, 200, { rows: db[route.collection] });
@@ -296,7 +397,7 @@ async function handleAtsCollection(request, response) {
         ? body
         : [body];
     const next = [...current];
-    const stampedRows = incoming.map(row => route.collection === 'submissions' ? stampSubmission(row) : withUpdatedTimestamp(row));
+    const stampedRows = incoming.map(row => route.collection === 'submissions' ? stampSubmission(row, actor) : withUpdatedTimestamp(row, actor));
     const seenSubmissions = new Set();
     const duplicate = route.collection === 'submissions'
       ? stampedRows.find(row => {
@@ -332,8 +433,8 @@ async function handleAtsCollection(request, response) {
 
   if (request.method === 'PATCH' && route.id) {
     const proposed = route.collection === 'submissions'
-      ? stampSubmission({ ...current.find(row => row.id === route.id), ...body, id: route.id })
-      : withUpdatedTimestamp({ ...current.find(row => row.id === route.id), ...body });
+      ? stampSubmission({ ...current.find(row => row.id === route.id), ...body, id: route.id }, actor)
+      : withUpdatedTimestamp({ ...current.find(row => row.id === route.id), ...body }, actor);
 
     if (route.collection === 'submissions') {
       const duplicate = findDuplicateSubmission(current, proposed, route.id);
@@ -358,7 +459,7 @@ async function handleAtsCollection(request, response) {
 
 async function handleSubmissionSubmit(request, response) {
   const body = JSON.parse(await readBody(request) || '{}');
-  const row = stampSubmission(body);
+  const row = stampSubmission(body, actorFromRequest(request));
   const result = await atsStore.insertSubmission(row);
 
   if (result.duplicate) {
@@ -370,6 +471,7 @@ async function handleSubmissionSubmit(request, response) {
     });
   }
 
+  scheduleGithubBackup('submission-submit');
   return json(response, 200, { row: result.row, rows: result.rows });
 }
 
@@ -381,7 +483,7 @@ async function handleEmailConnect(request, response) {
   const row = {
     id: body.id || `email-integration-${body.userId || 'user'}-${Date.now()}`,
     userId: body.userId || 'unknown-user',
-    userName: body.userName || 'ATS User',
+    userName: body.userName || await resolveBackendUserName(body.userId, 'ATS User'),
     provider: body.provider || 'Outlook / IMAP',
     emailAddress: body.emailAddress,
     imapHost: body.imapHost || 'outlook.office365.com',
@@ -400,6 +502,7 @@ async function handleEmailConnect(request, response) {
 
 async function handleEmailSend(request, response) {
   const body = JSON.parse(await readBody(request) || '{}');
+  const actor = actorFromRequest(request);
   const db = await readAtsDb();
   const current = Array.isArray(db.emailRecords) ? db.emailRecords : [];
   const now = new Date().toISOString();
@@ -407,6 +510,9 @@ async function handleEmailSend(request, response) {
     ...body,
     id: body.id || `email-api-${Date.now()}`,
     status: 'Sent',
+    deliveryStatus: body.deliveryStatus || 'Provider Pending',
+    deliveryProvider: body.deliveryProvider || body.provider || 'Configured mailbox',
+    providerMessage: body.providerMessage || 'ATS stored the outbound email request. Configure a server-side SMTP/Graph/Gmail sender to deliver through the selected mailbox provider.',
     sentAt: body.sentAt || new Intl.DateTimeFormat('en-US', {
       month: 'short',
       day: 'numeric',
@@ -415,7 +521,7 @@ async function handleEmailSend(request, response) {
       minute: '2-digit',
     }).format(new Date()),
     serverTimestamp: now,
-  });
+  }, actor);
   db.emailRecords = [row, ...current.filter(item => item.id !== row.id)];
   await writeAtsDb(db);
   return json(response, 200, { row, rows: db.emailRecords });
@@ -693,11 +799,182 @@ async function handleAudit(_request, response) {
   }
 }
 
+function githubBackupConfig() {
+  return {
+    repo: process.env.GITHUB_BACKUP_REPO || '',
+    token: process.env.GITHUB_BACKUP_TOKEN || process.env.GITHUB_TOKEN || '',
+    branch: process.env.GITHUB_BACKUP_BRANCH || 'main',
+    path: process.env.GITHUB_BACKUP_PATH || 'ats-backups/latest-ats-backup.json',
+    auto: String(process.env.GITHUB_BACKUP_AUTO ?? 'true').toLowerCase() !== 'false',
+    debounceMs: Number(process.env.GITHUB_BACKUP_DEBOUNCE_MS || 2500),
+  };
+}
+
+function queueGithubBackup(task) {
+  const next = githubBackupQueue.then(task, task);
+  githubBackupQueue = next.catch(() => {});
+  return next;
+}
+
+function scheduleGithubBackup(trigger) {
+  const config = githubBackupConfig();
+  if (!config.auto || !config.repo || !config.token) return;
+  if (githubBackupTimer) clearTimeout(githubBackupTimer);
+  githubBackupTimer = setTimeout(() => {
+    githubBackupTimer = null;
+    void queueGithubBackup(async () => {
+      try {
+        const result = await runGithubBackup({
+          id: 'system-auto-backup',
+          name: 'ATS Auto Backup',
+          email: '',
+          role: 'SuperUser',
+        }, trigger);
+        console.log(`GitHub ATS auto backup completed: ${result.totalRecords} records (${trigger})`);
+      } catch (error) {
+        console.warn('GitHub ATS auto backup failed:', error instanceof Error ? error.message : error);
+      }
+    });
+  }, Math.max(500, config.debounceMs));
+}
+
+async function putGithubFile({ repo, token, branch, path, content, message }) {
+  const apiPath = encodeURIComponent(path).replace(/%2F/g, '/');
+  const url = `https://api.github.com/repos/${repo}/contents/${apiPath}`;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'eventus-ats-backup',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  const existing = await fetch(`${url}?ref=${encodeURIComponent(branch)}`, { headers }).then(async githubResponse => {
+    if (githubResponse.status === 404) return null;
+    if (!githubResponse.ok) throw new Error(`GitHub lookup failed with ${githubResponse.status}`);
+    return githubResponse.json();
+  });
+  const githubResponse = await fetch(url, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({
+      message,
+      branch,
+      content: Buffer.from(content, 'utf8').toString('base64'),
+      sha: existing?.sha,
+    }),
+  });
+  const body = await githubResponse.json().catch(() => ({}));
+  if (!githubResponse.ok) {
+    throw new Error(body?.message || `GitHub update failed with ${githubResponse.status}`);
+  }
+  return body;
+}
+
+async function runGithubBackup(actor, trigger = 'manual-button') {
+  const [atsData, authData] = await Promise.all([readAtsDb(), ensureAuthState()]);
+  const atsCounts = Object.fromEntries(
+    Array.from(ATS_COLLECTIONS)
+      .map(collection => [collection, Array.isArray(atsData[collection]) ? atsData[collection].length : 0])
+  );
+  const authCounts = {
+    users: Array.isArray(authData.users) ? authData.users.length : 0,
+    superUserProfiles: authData.superUser ? 1 : 0,
+    passwordResetRequests: Array.isArray(authData.passwordResetRequests) ? authData.passwordResetRequests.length : 0,
+    passwordEmailOutbox: Array.isArray(authData.passwordEmailOutbox) ? authData.passwordEmailOutbox.length : 0,
+  };
+  const totalRecords = [
+    ...Object.values(atsCounts),
+    ...Object.values(authCounts),
+  ].reduce((sum, value) => sum + Number(value || 0), 0);
+
+  const backup = {
+    backupVersion: 1,
+    generatedAt: new Date().toISOString(),
+    generatedBy: actor,
+    trigger,
+    storage: atsStore.mode,
+    summary: {
+      totalRecords,
+      atsCounts,
+      authCounts,
+    },
+    atsData,
+    authData,
+    attachmentNote: 'This backup includes all ATS JSON records and stored data URLs. Browser-only uploads saved only as metadata do not contain original binary file bytes.',
+  };
+  const content = `${JSON.stringify(backup, null, 2)}\n`;
+  await mkdir(DATA_DIR, { recursive: true });
+  await writeFile(GITHUB_BACKUP_FILE, content);
+
+  const config = githubBackupConfig();
+  if (!config.repo || !config.token) {
+    return {
+      ok: true,
+      localOnly: true,
+      localPath: GITHUB_BACKUP_FILE,
+      totalRecords,
+      atsCounts,
+      authCounts,
+      message: 'ATS backup saved locally. GitHub repo/token settings are not configured yet, so no remote copy was pushed.',
+    };
+  }
+
+  const result = await putGithubFile({
+    ...config,
+    content,
+    message: `ATS backup ${backup.generatedAt}`,
+  });
+  return {
+    ok: true,
+    localOnly: false,
+    localPath: GITHUB_BACKUP_FILE,
+    githubPath: config.path,
+    githubUrl: result?.content?.html_url,
+    totalRecords,
+    atsCounts,
+    authCounts,
+    message: 'ATS backup saved locally and pushed to GitHub.',
+  };
+}
+
+async function handleGithubBackup(request, response) {
+  const actor = actorFromRequest(request);
+  if (!actor || actor.role !== 'SuperUser') {
+    return json(response, 403, { ok: false, message: 'Only SuperUser can run GitHub backups.' });
+  }
+
+  try {
+    return json(response, 200, await queueGithubBackup(() => runGithubBackup(actor, 'manual-button')));
+  } catch (error) {
+    const [atsData, authData] = await Promise.all([readAtsDb(), ensureAuthState()]);
+    const atsCounts = Object.fromEntries(
+      Array.from(ATS_COLLECTIONS)
+        .map(collection => [collection, Array.isArray(atsData[collection]) ? atsData[collection].length : 0])
+    );
+    const authCounts = {
+      users: Array.isArray(authData.users) ? authData.users.length : 0,
+      superUserProfiles: authData.superUser ? 1 : 0,
+      passwordResetRequests: Array.isArray(authData.passwordResetRequests) ? authData.passwordResetRequests.length : 0,
+      passwordEmailOutbox: Array.isArray(authData.passwordEmailOutbox) ? authData.passwordEmailOutbox.length : 0,
+    };
+    return json(response, 502, {
+      ok: false,
+      localOnly: true,
+      localPath: GITHUB_BACKUP_FILE,
+      totalRecords: [...Object.values(atsCounts), ...Object.values(authCounts)].reduce((sum, value) => sum + Number(value || 0), 0),
+      atsCounts,
+      authCounts,
+      message: error instanceof Error ? error.message : 'GitHub backup failed.',
+    });
+  }
+}
+
 const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return json(response, 204, {});
   const pathname = pathnameFromUrl(request.url);
   if (request.method === 'GET' && pathname === '/healthz') return json(response, 200, { ok: true, storage: atsStore.mode });
   if (pathname === '/api/auth/state' && (request.method === 'GET' || request.method === 'PUT')) return handleAuthState(request, response);
+  if (pathname === '/api/ats/github/backup' && request.method === 'POST') return handleGithubBackup(request, response);
   if (request.method === 'POST' && pathname === '/api/ai/run') return handleAI(request, response);
   if (request.method === 'GET' && pathname === '/api/ai/audit') return handleAudit(request, response);
   if (pathname === '/api/ats/submissions/submit' && request.method === 'POST') return handleSubmissionSubmit(request, response);

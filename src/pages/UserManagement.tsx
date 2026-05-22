@@ -9,6 +9,7 @@ import {
   Image as ImageIcon,
   Eye,
   EyeOff,
+  Github,
   KeyRound,
   LockKeyhole,
   Mail,
@@ -24,6 +25,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { QuickActionModal, QuickIconButton } from '@/components/ats/QuickActionModal';
+import { connectEmailIntegration, runGithubBackup } from '@/lib/atsApi';
 import {
   allSections,
   AppUser,
@@ -46,6 +48,7 @@ import { cn } from '@/lib/utils';
 
 const assignableSections = allSections.filter(section => section.key !== 'users');
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+type EmailProvider = 'Outlook' | 'IMAP/SMTP' | 'Gmail';
 
 function makeUserId(email: string) {
   const slug = email.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
@@ -63,6 +66,29 @@ function generateTemporaryPassword() {
   window.crypto?.getRandomValues?.(bytes);
   const body = Array.from(bytes, byte => alphabet[byte % alphabet.length]).join('');
   return `Ev${body}${symbols[bytes[0] % symbols.length]}${String(10 + (bytes[1] % 89))}`;
+}
+
+async function syncMailboxIntegration(input: {
+  id: string;
+  name: string;
+  emailProvider?: EmailProvider;
+  outlookEmail?: string;
+  imapHost?: string;
+  imapPort?: string;
+  smtpHost?: string;
+  smtpPort?: string;
+}) {
+  if (!input.outlookEmail?.trim()) return;
+  await connectEmailIntegration({
+    userId: input.id,
+    userName: input.name,
+    provider: input.emailProvider ?? 'Outlook',
+    emailAddress: input.outlookEmail.trim().toLowerCase(),
+    imapHost: input.imapHost || 'outlook.office365.com',
+    imapPort: Number(input.imapPort) || 993,
+    smtpHost: input.smtpHost || 'smtp.office365.com',
+    smtpPort: Number(input.smtpPort) || 587,
+  });
 }
 
 function readImageFile(file: File, onLoad: (dataUrl: string) => void, onError: (message: string) => void) {
@@ -88,6 +114,17 @@ function loadSuperUserProfile(session: ReturnType<typeof resolveSession>) {
     phone: saved.phone ?? '',
     title: saved.title ?? 'System Owner',
     avatarUrl: saved.avatarUrl ?? session?.avatarUrl ?? '',
+    outlookEmail: saved.outlookEmail ?? '',
+    outlookConnected: Boolean(saved.outlookConnected),
+    emailProvider: saved.emailProvider ?? 'Outlook',
+    imapHost: saved.imapHost ?? 'outlook.office365.com',
+    imapPort: saved.imapPort ?? '993',
+    smtpHost: saved.smtpHost ?? 'smtp.office365.com',
+    smtpPort: saved.smtpPort ?? '587',
+    signatureText: saved.signatureText ?? '',
+    signatureImageUrl: saved.signatureImageUrl ?? '',
+    signatureTitle: saved.signatureTitle ?? '',
+    signaturePhone: saved.signaturePhone ?? '',
   };
 }
 
@@ -98,11 +135,27 @@ export default function UserManagement() {
   const [showPassword, setShowPassword] = useState(false);
   const [activeAdminPanel, setActiveAdminPanel] = useState<'accounts' | 'profile' | 'security' | 'company'>('accounts');
   const [selectedPassword, setSelectedPassword] = useState('');
-  const [selectedEdit, setSelectedEdit] = useState({ name: '', email: '', active: true });
+  const [selectedEdit, setSelectedEdit] = useState({
+    name: '',
+    email: '',
+    active: true,
+    outlookEmail: '',
+    outlookConnected: false,
+    emailProvider: 'Outlook' as EmailProvider,
+    imapHost: 'outlook.office365.com',
+    imapPort: '993',
+    smtpHost: 'smtp.office365.com',
+    smtpPort: '587',
+    signatureText: '',
+    signatureImageUrl: '',
+    signatureTitle: '',
+    signaturePhone: '',
+  });
   const [superProfile, setSuperProfile] = useState(() => loadSuperUserProfile(session));
   const [superPassword, setSuperPassword] = useState({ current: '', next: '', confirm: '' });
   const [userAction, setUserAction] = useState<null | { type: 'create' | 'edit' | 'security' | 'superuser' | 'delete'; user?: AppUser }>(null);
   const [latestResetLink, setLatestResetLink] = useState('');
+  const [githubBackupStatus, setGithubBackupStatus] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [form, setForm] = useState({
@@ -110,6 +163,17 @@ export default function UserManagement() {
     email: '',
     password: '',
     avatarUrl: '',
+    outlookEmail: '',
+    outlookConnected: false,
+    emailProvider: 'Outlook' as EmailProvider,
+    imapHost: 'outlook.office365.com',
+    imapPort: '993',
+    smtpHost: 'smtp.office365.com',
+    smtpPort: '587',
+    signatureText: '',
+    signatureImageUrl: '',
+    signatureTitle: '',
+    signaturePhone: '',
     active: true,
     permissions: defaultUserPermissions,
   });
@@ -124,12 +188,33 @@ export default function UserManagement() {
 
   function saveSuperProfile() {
     const nextProfile = saveSuperUserProfile(superProfile);
+    void syncMailboxIntegration({
+      id: 'SuperUser',
+      name: nextProfile.name,
+      emailProvider: nextProfile.emailProvider,
+      outlookEmail: nextProfile.outlookEmail,
+      imapHost: nextProfile.imapHost,
+      imapPort: nextProfile.imapPort,
+      smtpHost: nextProfile.smtpHost,
+      smtpPort: nextProfile.smtpPort,
+    }).catch(error => console.error('Failed to sync SuperUser mailbox integration.', error));
     setSuperProfile({
       name: nextProfile.name,
       email: nextProfile.email,
       phone: nextProfile.phone ?? '',
       title: nextProfile.title ?? 'System Owner',
       avatarUrl: nextProfile.avatarUrl ?? '',
+      outlookEmail: nextProfile.outlookEmail ?? '',
+      outlookConnected: Boolean(nextProfile.outlookConnected),
+      emailProvider: nextProfile.emailProvider ?? 'Outlook',
+      imapHost: nextProfile.imapHost ?? 'outlook.office365.com',
+      imapPort: nextProfile.imapPort ?? '993',
+      smtpHost: nextProfile.smtpHost ?? 'smtp.office365.com',
+      smtpPort: nextProfile.smtpPort ?? '587',
+      signatureText: nextProfile.signatureText ?? '',
+      signatureImageUrl: nextProfile.signatureImageUrl ?? '',
+      signatureTitle: nextProfile.signatureTitle ?? '',
+      signaturePhone: nextProfile.signaturePhone ?? '',
     });
     if (session) {
       saveSession({
@@ -170,9 +255,60 @@ export default function UserManagement() {
     setError(reset.ok ? '' : reset.message);
   }
 
+  async function runGithubUpdate() {
+    setGithubBackupStatus('Preparing ATS backup for GitHub...');
+    setMessage('');
+    setError('');
+    const result = await runGithubBackup();
+    if (!result.ok || !result.data?.ok) {
+      setGithubBackupStatus('');
+      setError(result.data?.message || 'GitHub update failed. Check backend backup settings.');
+      return;
+    }
+    const counts = {
+      ...(result.data.atsCounts ?? {}),
+      ...(result.data.authCounts ?? {}),
+    };
+    const countLines = Object.entries(counts)
+      .filter(([, count]) => count > 0)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([collection, count]) => `${collection}: ${count}`)
+      .join('\n');
+    const destination = result.data.githubUrl
+      ? `GitHub copy: ${result.data.githubUrl}`
+      : result.data.githubPath
+        ? `GitHub path: ${result.data.githubPath}`
+        : `Local backup: ${result.data.localPath || 'server/data/github-backup.json'}`;
+    const githubState = result.data.localOnly
+      ? 'GitHub remote copy: pending setup. Add GITHUB_BACKUP_REPO and GITHUB_BACKUP_TOKEN on the backend.'
+      : 'GitHub remote copy: completed.';
+    setGithubBackupStatus([
+      result.data.message,
+      `Total records backed up: ${result.data.totalRecords ?? 0}`,
+      countLines ? `Details:\n${countLines}` : '',
+      destination,
+      githubState,
+    ].filter(Boolean).join('\n'));
+  }
+
   useEffect(() => {
     if (!selectedUser) return;
-    setSelectedEdit({ name: selectedUser.name, email: selectedUser.email, active: selectedUser.active });
+    setSelectedEdit({
+      name: selectedUser.name,
+      email: selectedUser.email,
+      active: selectedUser.active,
+      outlookEmail: selectedUser.outlookEmail ?? '',
+      outlookConnected: Boolean(selectedUser.outlookConnected),
+      emailProvider: selectedUser.emailProvider ?? 'Outlook',
+      imapHost: selectedUser.imapHost ?? 'outlook.office365.com',
+      imapPort: selectedUser.imapPort ?? '993',
+      smtpHost: selectedUser.smtpHost ?? 'smtp.office365.com',
+      smtpPort: selectedUser.smtpPort ?? '587',
+      signatureText: selectedUser.signatureText ?? '',
+      signatureImageUrl: selectedUser.signatureImageUrl ?? '',
+      signatureTitle: selectedUser.signatureTitle ?? '',
+      signaturePhone: selectedUser.signaturePhone ?? '',
+    });
   }, [selectedUser]);
 
   const updateUsers = (nextUsers: AppUser[], successMessage: string) => {
@@ -245,13 +381,28 @@ export default function UserManagement() {
       return;
     }
     const now = new Date().toISOString();
-    updateUsers(users.map(user => user.id === selectedUser.id ? {
-      ...user,
+    const nextUser = {
+      ...selectedUser,
       name: selectedEdit.name.trim(),
       email,
       active: selectedEdit.active,
+      outlookEmail: selectedEdit.outlookEmail.trim().toLowerCase(),
+      outlookConnected: selectedEdit.outlookConnected,
+      emailProvider: selectedEdit.emailProvider,
+      imapHost: selectedEdit.imapHost.trim(),
+      imapPort: selectedEdit.imapPort.trim(),
+      smtpHost: selectedEdit.smtpHost.trim(),
+      smtpPort: selectedEdit.smtpPort.trim(),
+      signatureText: selectedEdit.signatureText.trim(),
+      signatureImageUrl: selectedEdit.signatureImageUrl,
+      signatureTitle: selectedEdit.signatureTitle.trim(),
+      signaturePhone: selectedEdit.signaturePhone.trim(),
       updatedAt: now,
+    };
+    updateUsers(users.map(user => user.id === selectedUser.id ? {
+      ...nextUser,
     } : user), 'User details updated.');
+    void syncMailboxIntegration(nextUser).catch(error => console.error('Failed to sync user mailbox integration.', error));
   };
 
   const resetPassword = async (userId: string, password: string) => {
@@ -326,15 +477,27 @@ export default function UserManagement() {
       passwordBlocked: false,
       passwordUpdatedAt: new Date().toISOString(),
       avatarUrl: form.avatarUrl || undefined,
+      outlookEmail: form.outlookEmail.trim().toLowerCase(),
+      outlookConnected: form.outlookConnected,
+      emailProvider: form.emailProvider,
+      imapHost: form.imapHost.trim(),
+      imapPort: form.imapPort.trim(),
+      smtpHost: form.smtpHost.trim(),
+      smtpPort: form.smtpPort.trim(),
+      signatureText: form.signatureText.trim(),
+      signatureImageUrl: form.signatureImageUrl || undefined,
+      signatureTitle: form.signatureTitle.trim(),
+      signaturePhone: form.signaturePhone.trim(),
     };
 
     const nextUsers = [user, ...users];
     setUsers(nextUsers);
     saveUsers(nextUsers);
+    await syncMailboxIntegration(user);
     await syncAuthStateNow();
     setUsers(getUsers());
     setSelectedUserId(user.id);
-    setForm({ name: '', email: '', password: '', avatarUrl: '', active: true, permissions: defaultUserPermissions });
+    setForm({ name: '', email: '', password: '', avatarUrl: '', outlookEmail: '', outlookConnected: false, emailProvider: 'Outlook' as EmailProvider, imapHost: 'outlook.office365.com', imapPort: '993', smtpHost: 'smtp.office365.com', smtpPort: '587', signatureText: '', signatureImageUrl: '', signatureTitle: '', signaturePhone: '', active: true, permissions: defaultUserPermissions });
     setLatestResetLink('');
     setMessage('New user login created. Share the temporary password with the user so they can sign in and create their own password.');
   };
@@ -463,7 +626,7 @@ export default function UserManagement() {
       {activeAdminPanel === 'security' && (
         <div className="rounded-lg border border-white/10 bg-[#0d1729] p-5">
           <h2 className="mb-2 font-semibold text-white">Security & Password Administration</h2>
-          <p className="mb-5 text-xs text-slate-500">SuperUser can change its own password, email itself a reset link, and administer user passwords from User Accounts.</p>
+          <p className="mb-5 text-xs text-slate-500">SuperUser can change its own password, email itself a reset link, administer user passwords, and push a second ATS backup to GitHub.</p>
           <div className="grid gap-3 md:grid-cols-3">
             <PasswordInput label="Current SuperUser password" value={superPassword.current} show={showPassword} onChange={value => setSuperPassword(current => ({ ...current, current: value }))} />
             <PasswordInput label="New password" value={superPassword.next} show={showPassword} onChange={value => setSuperPassword(current => ({ ...current, next: value }))} />
@@ -479,6 +642,24 @@ export default function UserManagement() {
             <button onClick={emailSuperUserReset} className="rounded-lg border border-white/10 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-white/5">
               Email SuperUser Reset Link
             </button>
+          </div>
+          <div className="mt-5 rounded-lg border border-white/10 bg-white/[0.03] p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <Github size={15} className="text-blue-300" />
+                  GitHub Data Backup
+                </h3>
+                <p className="mt-1 text-xs text-slate-500">Creates a backend copy of ATS data, user data, audit-related records, resumes, and attachment metadata. With GitHub backup environment variables configured, it also pushes the JSON backup to the repository.</p>
+              </div>
+              <button onClick={runGithubUpdate} className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-100 px-4 py-2.5 text-xs font-semibold text-slate-950 hover:bg-white">
+                <Github size={14} />
+                GitHub Update
+              </button>
+            </div>
+            {githubBackupStatus && (
+              <p className="mt-3 whitespace-pre-line break-words rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs leading-5 text-emerald-300">{githubBackupStatus}</p>
+            )}
           </div>
         </div>
       )}
@@ -579,6 +760,77 @@ export default function UserManagement() {
                 />
               </div>
             </label>
+
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+              <p className="text-sm font-semibold text-white">Email Provider & Signature</p>
+              <p className="mt-1 text-xs text-slate-500">Used by candidate Connect email composer. Replies stay inside the connected mailbox provider.</p>
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-xs font-medium text-slate-400">Provider</span>
+                <select
+                  value={form.emailProvider}
+                  onChange={event => setForm(current => ({ ...current, emailProvider: event.target.value as EmailProvider }))}
+                  className="w-full rounded-lg border border-white/10 bg-[#111827] px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                >
+                  <option value="Outlook">Outlook / Microsoft 365</option>
+                  <option value="IMAP/SMTP">IMAP / SMTP</option>
+                  <option value="Gmail">Gmail / Google Workspace</option>
+                </select>
+              </label>
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-xs font-medium text-slate-400">Sending email</span>
+                <input
+                  type="text"
+                  inputMode="email"
+                  value={form.outlookEmail}
+                  onChange={event => setForm(current => ({ ...current, outlookEmail: event.target.value }))}
+                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                  placeholder="recruiter@company.com"
+                />
+              </label>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <LabeledInput label="IMAP host" value={form.imapHost} onChange={value => setForm(current => ({ ...current, imapHost: value }))} />
+                <LabeledInput label="IMAP port" value={form.imapPort} onChange={value => setForm(current => ({ ...current, imapPort: value }))} />
+                <LabeledInput label="SMTP host" value={form.smtpHost} onChange={value => setForm(current => ({ ...current, smtpHost: value }))} />
+                <LabeledInput label="SMTP port" value={form.smtpPort} onChange={value => setForm(current => ({ ...current, smtpPort: value }))} />
+              </div>
+              <button
+                type="button"
+                onClick={() => setForm(current => ({ ...current, outlookConnected: !current.outlookConnected }))}
+                className={cn('mt-3 flex w-full items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold', form.outlookConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
+              >
+                <span>Mailbox connection</span>
+                <span>{form.outlookConnected ? 'Connected' : 'Not connected'}</span>
+              </button>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <LabeledInput label="Signature title" value={form.signatureTitle} onChange={value => setForm(current => ({ ...current, signatureTitle: value }))} />
+                <LabeledInput label="Signature phone" value={form.signaturePhone} onChange={value => setForm(current => ({ ...current, signaturePhone: value }))} />
+              </div>
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-xs font-medium text-slate-400">Signature text</span>
+                <textarea
+                  value={form.signatureText}
+                  onChange={event => setForm(current => ({ ...current, signatureText: event.target.value }))}
+                  rows={3}
+                  className="w-full resize-none rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                  placeholder="Thanks,&#10;Recruiter Name"
+                />
+              </label>
+              <label className="mt-3 flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10">
+                <ImageIcon size={14} />
+                Upload Signature Image
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={event => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    readImageFile(file, signatureImageUrl => setForm(current => ({ ...current, signatureImageUrl })), setError);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
 
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-slate-400">Temporary Password</span>
@@ -773,6 +1025,117 @@ export default function UserManagement() {
                   >
                     {selectedEdit.active ? 'Active' : 'Disabled'}
                   </button>
+                </div>
+                <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Mail size={14} className="text-blue-300" />
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Email Provider & Signature</h3>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">Provider</span>
+                      <select
+                        value={selectedEdit.emailProvider}
+                        onChange={event => setSelectedEdit(current => ({ ...current, emailProvider: event.target.value as EmailProvider }))}
+                        className="w-full rounded-lg border border-white/10 bg-[#111827] px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                      >
+                        <option value="Outlook">Outlook / Microsoft 365</option>
+                        <option value="IMAP/SMTP">IMAP / SMTP</option>
+                        <option value="Gmail">Gmail / Google Workspace</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">Sending email</span>
+                      <input
+                        value={selectedEdit.outlookEmail}
+                        onChange={event => setSelectedEdit(current => ({ ...current, outlookEmail: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                        placeholder="recruiter@company.com"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">IMAP host</span>
+                      <input
+                        value={selectedEdit.imapHost}
+                        onChange={event => setSelectedEdit(current => ({ ...current, imapHost: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">IMAP port</span>
+                      <input
+                        value={selectedEdit.imapPort}
+                        onChange={event => setSelectedEdit(current => ({ ...current, imapPort: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">SMTP host</span>
+                      <input
+                        value={selectedEdit.smtpHost}
+                        onChange={event => setSelectedEdit(current => ({ ...current, smtpHost: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">SMTP port</span>
+                      <input
+                        value={selectedEdit.smtpPort}
+                        onChange={event => setSelectedEdit(current => ({ ...current, smtpPort: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedEdit(current => ({ ...current, outlookConnected: !current.outlookConnected }))}
+                      className={cn('self-end rounded-lg border px-3 py-2.5 text-xs font-semibold', selectedEdit.outlookConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
+                    >
+                      {selectedEdit.outlookConnected ? 'Mailbox connected' : 'Connect mailbox'}
+                    </button>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">Signature title</span>
+                      <input
+                        value={selectedEdit.signatureTitle}
+                        onChange={event => setSelectedEdit(current => ({ ...current, signatureTitle: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">Signature phone</span>
+                      <input
+                        value={selectedEdit.signaturePhone}
+                        onChange={event => setSelectedEdit(current => ({ ...current, signaturePhone: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                      />
+                    </label>
+                  </div>
+                  <label className="mt-3 block">
+                    <span className="mb-1.5 block text-xs font-medium text-slate-400">Signature text</span>
+                    <textarea
+                      value={selectedEdit.signatureText}
+                      onChange={event => setSelectedEdit(current => ({ ...current, signatureText: event.target.value }))}
+                      rows={3}
+                      className="w-full resize-none rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                    />
+                  </label>
+                  <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/10">
+                    <ImageIcon size={13} />
+                    Upload Signature Image
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={event => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        readImageFile(file, signatureImageUrl => setSelectedEdit(current => ({ ...current, signatureImageUrl })), setError);
+                        event.target.value = '';
+                      }}
+                    />
+                  </label>
+                  {selectedEdit.signatureImageUrl && (
+                    <img src={selectedEdit.signatureImageUrl} alt="Email signature preview" className="mt-3 max-h-16 rounded-lg border border-white/10 object-contain" />
+                  )}
                 </div>
                 <button onClick={saveSelectedUserDetails} className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">
                   Save User Details

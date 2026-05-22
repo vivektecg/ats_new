@@ -9,6 +9,7 @@ import {
 import { QuickActionModal, QuickIconButton } from '@/components/ats/QuickActionModal';
 import { submissions } from '@/lib/data';
 import { LOCAL_CANDIDATES_KEY, LOCAL_SUBMISSIONS_KEY, readLocalRows, saveRows } from '@/lib/atsApi';
+import { currentOwnerName } from '@/lib/auth';
 import { ATS_RECORDS_UPDATED_EVENT } from '@/lib/atsLocalStore';
 import { getAllCandidates, getAllClients, getAllJobs } from '@/lib/localRecords';
 import { createComplianceCase, createOnboardingCase, loadComplianceCases, loadOnboardingCases, saveComplianceCases, saveOnboardingCases } from '@/lib/onboardingStore';
@@ -131,7 +132,7 @@ function createInitialForm(): SubmissionFormState {
     candidateId: candidate?.id ?? '',
     jobId: job?.id ?? '',
     clientId: job?.clientId ?? '',
-    recruiter: candidate?.recruiter ?? 'SuperUser',
+    recruiter: currentOwnerName(candidate?.recruiter ?? 'SuperUser'),
     submittedDate: todayDate(),
     payRate: candidate?.salary ?? '',
     billRate: job?.salary ?? '',
@@ -220,7 +221,7 @@ export default function Submissions() {
     setForm(current => ({
       ...current,
       candidateId,
-      recruiter: candidate.recruiter,
+      recruiter: current.recruiter || currentOwnerName(candidate.recruiter),
       payRate: candidate.salary,
     }));
   };

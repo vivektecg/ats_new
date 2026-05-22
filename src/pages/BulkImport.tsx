@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { AlertTriangle, Bot, CalendarClock, FileSpreadsheet, FileUp, Play, UploadCloud } from 'lucide-react';
 import { getAllJobs } from '@/lib/localRecords';
 import { upsertLocalCandidates } from '@/lib/atsLocalStore';
+import { currentOwnerName } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import type { Job } from '@/lib/types';
 
@@ -49,6 +50,16 @@ type AutopilotSchedule = {
   lastRunAt?: string;
 };
 
+type ExcelRow = Record<string, unknown>;
+type AutopilotEmailDigest = {
+  id: string;
+  scheduleId: string;
+  to: string;
+  subject: string;
+  body: string;
+  createdAt: string;
+};
+
 const emptyJob: Job = {
   id: '', title: 'No job selected', client: 'Client pending', clientId: '', location: 'Manual location pending', type: 'Contract',
   status: 'Active', priority: 'Medium', salary: 'Open', openings: 0, filled: 0, recruiter: 'SuperUser', description: '',
@@ -77,7 +88,7 @@ function normalizeHeader(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-function pick(row: Record<string, any>, headers: string[]) {
+function pick(row: ExcelRow, headers: string[]) {
   const entries = Object.entries(row);
   for (const wanted of headers) {
     const found = entries.find(([key]) => normalizeHeader(key) === wanted || normalizeHeader(key).includes(wanted));
@@ -200,7 +211,7 @@ export default function BulkImport() {
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: 'array' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
+    const rows = XLSX.utils.sheet_to_json<ExcelRow>(sheet, { defval: '' });
     const headers = rows[0] ? Object.keys(rows[0]) : [];
     setExcelMappings(headers.map(header => ({ header, mapsTo: inferMapping(header), status: inferMapping(header) === 'Ignored' ? 'Ignored' : 'Mapped' })));
     const parsed = rows.map((row, index) => {
@@ -236,10 +247,11 @@ export default function BulkImport() {
       setNotice('Select resume files from your computer first.');
       return;
     }
+    const owner = currentOwnerName();
     const result = upsertLocalCandidates(resumeRows.map(row => ({
       ...row,
       source: 'Bulk Resume Upload',
-      recruiter: 'SuperUser',
+      recruiter: owner,
       resumeAttachment: row.resumeFile ? { fileName: row.resumeFile, fileType: 'resume-upload', fileSize: resumeFiles.find(file => file.name === row.resumeFile)?.size ?? 0, uploadedAt: new Date().toISOString() } : undefined,
     })));
     setNotice(`Bulk resume import completed: ${result.imported} new candidates saved to ATS database. Candidates, Pipeline, Reports, Dashboard, and AI modules will refresh from the shared store.`);
@@ -250,15 +262,15 @@ export default function BulkImport() {
       setNotice('Upload and parse an Excel/CSV file first.');
       return;
     }
-    const result = upsertLocalCandidates(excelRows.map(row => ({ ...row, source: 'Excel Import', recruiter: 'SuperUser' })));
+    const result = upsertLocalCandidates(excelRows.map(row => ({ ...row, source: 'Excel Import', recruiter: currentOwnerName() })));
     setNotice(`Excel import committed to ATS database: ${result.imported} new candidates saved and available across Candidates, Pipeline, Reports, Dashboard, and AI modules.`);
   }
 
   function runSchedule(schedule: AutopilotSchedule) {
     const job = jobs.find(item => item.id === schedule.jobId) ?? selectedJob;
     const rows = candidateRowsForAutopilot(schedule, job);
-    const result = upsertLocalCandidates(rows.map(row => ({ ...row, source: `Autopilot: ${schedule.boards[0] ?? 'Authorized source'}`, recruiter: 'SuperUser' })));
-    writeArray(AUTOPILOT_EMAILS_KEY, [{ id: `digest-${Date.now()}`, scheduleId: schedule.id, to: 'scheduler@eventus.local', subject: `Autopilot fetched ${rows.length} profiles for ${job.title}`, body: emailTable(rows), createdAt: new Date().toISOString() }, ...readArray<any>(AUTOPILOT_EMAILS_KEY)].slice(0, 50));
+    const result = upsertLocalCandidates(rows.map(row => ({ ...row, source: `Autopilot: ${schedule.boards[0] ?? 'Authorized source'}`, recruiter: currentOwnerName(job.recruiter) })));
+    writeArray(AUTOPILOT_EMAILS_KEY, [{ id: `digest-${Date.now()}`, scheduleId: schedule.id, to: 'scheduler@eventus.local', subject: `Autopilot fetched ${rows.length} profiles for ${job.title}`, body: emailTable(rows), createdAt: new Date().toISOString() }, ...readArray<AutopilotEmailDigest>(AUTOPILOT_EMAILS_KEY)].slice(0, 50));
     const next = readArray<AutopilotSchedule>(AUTOPILOT_SCHEDULES_KEY).map(item => item.id === schedule.id ? { ...item, status: 'Completed' as const, lastRunAt: new Date().toISOString() } : item);
     persistSchedules(next);
     setNotice(`Autopilot completed: ${result.imported} candidates fetched, saved to ATS database, and email digest queued with Name, Email, Location, Role table.`);
@@ -311,7 +323,7 @@ export default function BulkImport() {
               </label>
               <button onClick={importResumeBatch} className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500"><Play size={15} />Parse & Import Resume Batch</button>
             </div>
-            <CandidatePreview rows={resumeRows} empty="No resume files staged yet." />
+            <CandidatePreview rows={resumeRows} empty="No resume files staged yet." showRoleAndSkills />
           </div>
         </Panel>
       )}
@@ -329,7 +341,7 @@ export default function BulkImport() {
               <button onClick={importExcelCandidates} className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500"><UploadCloud size={15} />Import Excel Candidates</button>
             </div>
             <div className="space-y-4">
-              <CandidatePreview rows={excelRows} empty="No spreadsheet rows parsed yet." />
+              <CandidatePreview rows={excelRows} empty="No spreadsheet rows parsed yet." showRoleAndSkills />
               <div className="rounded-lg border border-white/5 bg-[#070d18]">
                 {excelMappings.length ? excelMappings.map(row => <div key={row.header} className="grid grid-cols-3 gap-3 border-b border-white/5 px-4 py-3 text-sm last:border-0"><span className="text-white">{row.header}</span><span className="text-slate-400">{row.mapsTo}</span><span className={row.status === 'Mapped' ? 'text-emerald-300' : 'text-slate-500'}>{row.status}</span></div>) : <p className="p-4 text-sm text-slate-500">Header mapping appears after file upload.</p>}
               </div>
@@ -377,8 +389,12 @@ function Panel({ title, icon, children }: { title: string; icon: React.ReactNode
   return <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="rounded-lg border border-white/5 bg-[#0d1729] p-5"><div className="mb-4 flex items-center gap-2"><span className="text-blue-300">{icon}</span><h2 className="text-sm font-semibold text-white">{title}</h2></div>{children}</motion.section>;
 }
 
-function CandidatePreview({ rows, empty, compact = false }: { rows: PreviewCandidate[]; empty: string; compact?: boolean }) {
-  return <div className="rounded-lg border border-white/5 bg-[#070d18]"><div className="grid grid-cols-[1fr_1fr_130px_1fr] gap-3 border-b border-white/5 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500"><span>Name</span><span>Email</span><span>Phone</span><span>Warning</span></div>{rows.length ? rows.map(row => <div key={`${row.name}-${row.email}-${row.phone}`} className={cn('grid grid-cols-[1fr_1fr_130px_1fr] gap-3 border-b border-white/5 px-4 text-xs last:border-0', compact ? 'py-2' : 'py-3')}><span className="font-semibold text-white">{row.name}</span><span className={row.email ? 'text-slate-400' : 'text-red-300'}>{row.email || 'Missing'}</span><span className={row.phone ? 'text-slate-400' : 'text-red-300'}>{row.phone || 'Missing'}</span><span className={makeWarning(row) ? 'text-amber-300' : 'text-emerald-300'}>{makeWarning(row) || 'Ready'}</span></div>) : <p className="p-4 text-sm text-slate-500">{empty}</p>}</div>;
+function CandidatePreview({ rows, empty, compact = false, showRoleAndSkills = false }: { rows: PreviewCandidate[]; empty: string; compact?: boolean; showRoleAndSkills?: boolean }) {
+  const gridClass = showRoleAndSkills
+    ? 'grid-cols-[minmax(140px,1fr)_minmax(160px,1fr)_130px_minmax(150px,0.9fr)_minmax(180px,1.1fr)_minmax(160px,1fr)]'
+    : 'grid-cols-[1fr_1fr_130px_1fr]';
+
+  return <div className="overflow-x-auto rounded-lg border border-white/5 bg-[#070d18]"><div className={cn('grid min-w-[760px] gap-3 border-b border-white/5 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500', gridClass)}><span>Name</span><span>Email</span><span>Phone</span>{showRoleAndSkills && <><span>Role</span><span>Skills</span></>}<span>Warning</span></div>{rows.length ? rows.map(row => <div key={`${row.name}-${row.email}-${row.phone}`} className={cn('grid min-w-[760px] gap-3 border-b border-white/5 px-4 text-xs last:border-0', gridClass, compact ? 'py-2' : 'py-3')}><span className="font-semibold text-white">{row.name}</span><span className={row.email ? 'text-slate-400' : 'text-red-300'}>{row.email || 'Missing'}</span><span className={row.phone ? 'text-slate-400' : 'text-red-300'}>{row.phone || 'Missing'}</span>{showRoleAndSkills && <><span className="text-slate-300">{row.title || 'Role pending'}</span><span className="text-slate-400">{row.skills?.length ? row.skills.join(', ') : 'Skills pending'}</span></>}<span className={makeWarning(row) ? 'text-amber-300' : 'text-emerald-300'}>{makeWarning(row) || 'Ready'}</span></div>) : <p className="p-4 text-sm text-slate-500">{empty}</p>}</div>;
 }
 
 function Field({ label, value, onChange, type = 'text' }: { label: string; value: string; onChange: (value: string) => void; type?: string }) {

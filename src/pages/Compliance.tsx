@@ -8,10 +8,10 @@ import {
 } from 'lucide-react';
 import { QuickActionModal, QuickIconButton } from '@/components/ats/QuickActionModal';
 import {
-  candidateDocuments, candidates, jobs, recruiters,
-  resumeVersions, submissions, tasks,
+  resumeVersions, tasks,
 } from '@/lib/data';
-import { getAllCandidates, getAllJobs } from '@/lib/localRecords';
+import { getAtsOwners } from '@/lib/auth';
+import { getAllCandidateDocuments, getAllCandidates, getAllJobs, getAllSubmissions } from '@/lib/localRecords';
 import { cn } from '@/lib/utils';
 
 type AuditCategory =
@@ -64,6 +64,11 @@ function recommendationForScore(score: number) {
 }
 
 function makeAuditLogs(): AuditLog[] {
+  const candidates = getAllCandidates();
+  const jobs = getAllJobs();
+  const submissions = getAllSubmissions();
+  const candidateDocuments = getAllCandidateDocuments();
+  const fallbackJob = jobs[0];
   const userLogs = tasks.slice(0, 6).map((task, index): AuditLog => ({
     id: `user-${task.id}`,
     category: 'User activity logs',
@@ -91,14 +96,14 @@ function makeAuditLogs(): AuditLog[] {
   }));
 
   const aiLogs = candidates.slice(0, 8).map((candidate, index): AuditLog => {
-    const job = jobs[index % jobs.length];
+    const job = jobs[index % jobs.length] ?? fallbackJob;
     const score = scoreForCandidate(index);
     return {
       id: `ai-${candidate.id}`,
       category: 'AI validation logs',
       actor: 'AI Matching Assistant',
       role: 'System',
-      entity: `${candidate.name} -> ${job.title}`,
+      entity: `${candidate.name} -> ${job?.title ?? 'Open job'}`,
       entityType: 'AI Validation',
       action: `AI validation completed: ${recommendationForScore(score)} (${score}%)`,
       timestamp: `2026-05-${String(11 + index).padStart(2, '0')} ${10 + index}:30 AM`,
@@ -108,7 +113,7 @@ function makeAuditLogs(): AuditLog[] {
   });
 
   const scoreLogs = candidates.slice(0, 8).map((candidate, index): AuditLog => {
-    const job = jobs[index % jobs.length];
+    const job = jobs[index % jobs.length] ?? fallbackJob;
     return {
       id: `score-${candidate.id}`,
       category: 'Score explanation logs',
@@ -119,7 +124,7 @@ function makeAuditLogs(): AuditLog[] {
       action: 'Stored score explanation and weighted factor breakdown',
       timestamp: `2026-05-${String(11 + index).padStart(2, '0')} ${11 + index}:05 AM`,
       outcome: 'Recorded',
-      explanation: `JD version ${job.id}-v1 and resume evidence were used for skills, experience, domain, location, authorization, education, and certification scoring.`,
+      explanation: `JD version ${job?.id ?? 'job'}-v1 and resume evidence were used for skills, experience, domain, location, authorization, education, and certification scoring.`,
     };
   });
 
@@ -157,6 +162,7 @@ function makeAuditLogs(): AuditLog[] {
 export default function Compliance() {
   const availableCandidates = getAllCandidates();
   const availableJobs = getAllJobs();
+  const activeOwners = getAtsOwners();
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<AuditCategory | 'All'>('All');
   const [selectedCandidateId, setSelectedCandidateId] = useState(availableCandidates[0]?.id ?? '');
@@ -167,7 +173,7 @@ export default function Compliance() {
   const auditLogs = makeAuditLogs();
   const selectedCandidate = availableCandidates.find(candidate => candidate.id === selectedCandidateId) ?? availableCandidates[0];
   const selectedResumeVersion = selectedCandidate ? resumeVersions.find(version => version.candidateId === selectedCandidate.id) : undefined;
-  const selectedSubmission = selectedCandidate ? submissions.find(submission => submission.candidateId === selectedCandidate.id) : undefined;
+  const selectedSubmission = selectedCandidate ? getAllSubmissions().find(submission => submission.candidateId === selectedCandidate.id) : undefined;
   const selectedJob = availableJobs.find(job => job.id === selectedSubmission?.jobId) ?? availableJobs[0];
   const selectedIndex = selectedCandidate ? availableCandidates.findIndex(candidate => candidate.id === selectedCandidate.id) : 0;
   const selectedScore = scoreForCandidate(Math.max(0, selectedIndex));
@@ -184,9 +190,9 @@ export default function Compliance() {
   });
 
   const roleRows = [
-    { role: 'Admin', permissions: 'Full audit access, data export, deletion approval, role management', users: 'Sarah Chen' },
-    { role: 'Recruiter', permissions: 'Candidate/job/submission activity, AI explanations, own candidate exports', users: recruiters.filter(name => name !== 'All Team').join(', ') },
-    { role: 'Viewer', permissions: 'Read-only reports and non-sensitive audit summaries', users: 'Alex Kim' },
+    { role: 'Admin', permissions: 'Full audit access, data export, deletion approval, role management', users: activeOwners.filter(owner => owner.role === 'SuperUser').map(owner => owner.name).join(', ') || 'SuperUser' },
+    { role: 'Recruiter', permissions: 'Candidate/job/submission activity, AI explanations, own candidate exports', users: activeOwners.filter(owner => owner.role === 'User').map(owner => owner.name).join(', ') || 'No active users yet' },
+    { role: 'Viewer', permissions: 'Read-only reports and non-sensitive audit summaries', users: 'Assign from User Management' },
     { role: 'System', permissions: 'AI validation logging only; cannot make final hiring decisions', users: 'AI Matching Assistant' },
   ];
 

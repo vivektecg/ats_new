@@ -8,10 +8,11 @@ import {
 } from 'lucide-react';
 import { getAllJobs, getAllSubmissions } from '@/lib/localRecords';
 import { ATS_RECORDS_UPDATED_EVENT, LOCAL_CANDIDATES_KEY, normalizeCandidateRecord } from '@/lib/atsLocalStore';
-import { saveRows } from '@/lib/atsApi';
+import { saveRows, sendEmailRecord } from '@/lib/atsApi';
+import { currentOwnerName, getAtsOwnerNames, getSuperUserProfile, getUsers, resolveSession } from '@/lib/auth';
 import { formatCallDuration, openCandidateDialer, saveCandidateCallLog, type CallOutcome } from '@/lib/callLogs';
 import { createCandidateJobSubmission, duplicateSubmissionMessage, findCandidateJobSubmission } from '@/lib/submissionStore';
-import type { Candidate, CandidateStatus } from '@/lib/types';
+import type { Candidate, CandidateStatus, EmailRecord } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 type CandidateRecord = Candidate & {
@@ -37,6 +38,12 @@ type CandidateRecord = Candidate & {
   aiMatchScore: number;
   matchedJobTitle: string;
   archived?: boolean;
+  createdBy?: string;
+  createdByUserId?: string;
+  createdByEmail?: string;
+  updatedBy?: string;
+  updatedByUserId?: string;
+  updatedByEmail?: string;
 };
 
 type FileAttachment = {
@@ -107,7 +114,6 @@ const statusColors: Record<CandidateStatus, string> = {
 
 const allStatuses: CandidateStatus[] = ['New', 'Screening', 'Interview', 'Offer', 'Placed', 'Rejected', 'On Hold'];
 const pipelineOrder: CandidateStatus[] = ['New', 'Screening', 'Interview', 'Offer', 'Placed'];
-const recruiters = ['Sarah Chen', 'James Park', 'Maria Torres', 'All Team'];
 const sources = ['LinkedIn', 'Referral', 'Indeed', 'Job Board', 'Website', 'Upload', 'Direct Sourcing'];
 const workAuthorizationOptions = ['US Citizen', 'USC', 'Green Card', 'H-1B', 'H4-EAD', 'OPT', 'CPT', 'GC-EAD', 'L2S', 'L-2 EAD', 'EAD', 'TN Visa', 'Other'];
 const supportingDocumentOptions = ['Visa copy', 'DL copy', 'ID proof', 'Passport copy', 'EAD card', 'I-94', 'Education certificate', 'Certification'];
@@ -287,7 +293,7 @@ const emptyForm: CandidateFormState = {
   passportNumber: '',
   availability: 'Immediately',
   source: 'LinkedIn',
-  owner: 'Sarah Chen',
+  owner: 'SuperUser',
   status: 'New',
   parsedResumeDetails: '',
   education: '',
@@ -336,6 +342,7 @@ function formFromCandidate(candidate: CandidateRecord): CandidateFormState {
 function candidateFromForm(form: CandidateFormState, id: string): CandidateRecord {
   const now = new Date().toISOString().slice(0, 10);
   const skills = form.skills.split(',').map(skill => skill.trim()).filter(Boolean);
+  const session = resolveSession();
 
   return {
     id,
@@ -362,6 +369,12 @@ function candidateFromForm(form: CandidateFormState, id: string): CandidateRecor
     source: form.source,
     recruiter: form.owner,
     owner: form.owner,
+    createdBy: session?.name ?? form.owner,
+    createdByUserId: session?.id,
+    createdByEmail: session?.email,
+    updatedBy: session?.name ?? form.owner,
+    updatedByUserId: session?.id,
+    updatedByEmail: session?.email,
     createdAt: now,
     updatedAt: now,
     summary: form.notes || `${form.fullName} is ready for recruiter review.`,
@@ -415,6 +428,8 @@ export default function Candidates() {
   const deferredSkillSearch = useDeferredValue(skillSearch);
   const deferredRoleSearch = useDeferredValue(roleSearch);
   const deferredBooleanSearch = useDeferredValue(booleanSearch);
+  const ownerOptions = useMemo(() => getAtsOwnerNames(), []);
+  const newCandidateForm = useMemo(() => ({ ...emptyForm, owner: currentOwnerName() }), []);
 
   useEffect(() => {
     if (location.pathname === '/candidates/new') {
@@ -834,8 +849,9 @@ export default function Candidates() {
       {action?.type === 'add' && (
         <CandidateFormPanel
           title="Add Candidate"
-          initial={emptyForm}
+          initial={newCandidateForm}
           submitLabel="Add Candidate"
+          ownerOptions={ownerOptions}
           onClose={() => setAction(null)}
           onSubmit={form => upsertCandidate(form)}
         />
@@ -845,6 +861,7 @@ export default function Candidates() {
           title={`Edit ${action.candidate.name}`}
           initial={formFromCandidate(action.candidate)}
           submitLabel="Update Candidate"
+          ownerOptions={ownerOptions}
           onClose={() => setAction(null)}
           onSubmit={form => upsertCandidate(form, action.candidate)}
         />
@@ -1072,17 +1089,23 @@ function CandidateFormPanel({
   title,
   initial,
   submitLabel,
+  ownerOptions,
   onClose,
   onSubmit,
 }: {
   title: string;
   initial: CandidateFormState;
   submitLabel: string;
+  ownerOptions: string[];
   onClose: () => void;
   onSubmit: (form: CandidateFormState) => void;
 }) {
   const [form, setForm] = useState(initial);
   const [error, setError] = useState('');
+  const visibleOwnerOptions = useMemo(
+    () => form.owner && !ownerOptions.includes(form.owner) ? [form.owner, ...ownerOptions] : ownerOptions,
+    [form.owner, ownerOptions]
+  );
 
   function update<K extends keyof CandidateFormState>(key: K, value: CandidateFormState[K]) {
     setForm(previous => ({ ...previous, [key]: value }));
@@ -1130,7 +1153,7 @@ function CandidateFormPanel({
           <SelectField label="Relocation Preference" value={form.relocationPreference} options={['Open to relocate', 'Remote only', 'Hybrid only', 'Local only', 'Not open to relocate']} onChange={value => update('relocationPreference', value)} />
           <SelectField label="Availability" value={form.availability} options={['Immediately', '1 week', '2 weeks', '3 weeks', '1 month', 'Placed']} onChange={value => update('availability', value)} />
           <SelectField label="Source" value={form.source} options={sources} onChange={value => update('source', value)} />
-          <SelectField label="Owner" value={form.owner} options={recruiters} onChange={value => update('owner', value)} />
+          <SelectField label="Owner" value={form.owner} options={visibleOwnerOptions} onChange={value => update('owner', value)} />
           <SelectField label="Status" value={form.status} options={allStatuses} onChange={value => update('status', value as CandidateStatus)} />
           <Field label="Education" value={form.education} onChange={value => update('education', value)} />
           <Field label="Certifications" value={form.certifications} onChange={value => update('certifications', value)} />
@@ -1609,6 +1632,43 @@ function NotePanel({ candidate, onClose, onSubmit }: { candidate: CandidateRecor
   );
 }
 
+function currentEmailSettings() {
+  const session = resolveSession();
+  if (!session) return null;
+  if (session.role === 'SuperUser') {
+    const profile = getSuperUserProfile();
+    return {
+      name: profile.name,
+      email: profile.outlookEmail || profile.email,
+      connected: profile.outlookConnected || Boolean(profile.email),
+      provider: profile.emailProvider || 'Outlook',
+      imapHost: profile.imapHost || 'outlook.office365.com',
+      imapPort: profile.imapPort || '993',
+      smtpHost: profile.smtpHost || 'smtp.office365.com',
+      smtpPort: profile.smtpPort || '587',
+      signatureText: profile.signatureText || `Thanks,\n${profile.name}`,
+      signatureImageUrl: profile.signatureImageUrl || '',
+      signatureTitle: profile.signatureTitle || profile.title || '',
+      signaturePhone: profile.signaturePhone || profile.phone || '',
+    };
+  }
+  const user = getUsers().find(row => row.id === session.id);
+  return {
+    name: user?.name ?? session.name,
+    email: user?.outlookEmail || session.email,
+    connected: Boolean(user?.outlookConnected && (user.outlookEmail || session.email)),
+    provider: user?.emailProvider || 'Outlook',
+    imapHost: user?.imapHost || 'outlook.office365.com',
+    imapPort: user?.imapPort || '993',
+    smtpHost: user?.smtpHost || 'smtp.office365.com',
+    smtpPort: user?.smtpPort || '587',
+    signatureText: user?.signatureText || `Thanks,\n${user?.name ?? session.name}`,
+    signatureImageUrl: user?.signatureImageUrl || '',
+    signatureTitle: user?.signatureTitle || '',
+    signaturePhone: user?.signaturePhone || '',
+  };
+}
+
 function InfoTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-white/5 bg-white/[0.03] p-3">
@@ -1619,10 +1679,95 @@ function InfoTile({ label, value }: { label: string; value: string }) {
 }
 
 function ConnectPanel({ candidate, onClose, onRecord }: { candidate: CandidateRecord; onClose: () => void; onRecord: (method: string) => void }) {
+  const [mode, setMode] = useState<'menu' | 'email'>('menu');
+  const [cc, setCc] = useState('');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [message, setMessage] = useState('');
+  const emailSettings = currentEmailSettings();
+  const signatureLines = [
+    emailSettings?.signatureText,
+    emailSettings?.signatureTitle,
+    emailSettings?.signaturePhone,
+  ].filter(Boolean).join('\n');
+  const fullBody = [body.trim(), signatureLines].filter(Boolean).join('\n\n');
+
+  async function sendCandidateEmail(event: FormEvent) {
+    event.preventDefault();
+    setMessage('');
+    if (!candidate.email.trim()) {
+      setMessage('Candidate email is missing.');
+      return;
+    }
+    if (!emailSettings?.connected || !emailSettings.email) {
+      setMessage('Mailbox provider is not connected for this user. SuperUser can configure it in User Management.');
+      return;
+    }
+    if (!subject.trim() || !body.trim()) {
+      setMessage('Subject and body are required.');
+      return;
+    }
+
+    const record: EmailRecord = {
+      id: `candidate-email-${Date.now()}`,
+      candidateId: candidate.id,
+      candidateName: candidate.name,
+      type: 'Candidate outreach',
+      to: candidate.email,
+      cc: cc.trim(),
+      subject: subject.trim(),
+      body: fullBody,
+      status: 'Sent',
+      sentAt: new Date().toLocaleString(),
+      sender: emailSettings.email,
+      deliveryProvider: emailSettings.provider,
+      deliveryStatus: 'Provider Pending',
+      providerMessage: `${emailSettings.provider} delivery is configured for ${emailSettings.email}. Replies remain in the mailbox provider and are not imported into ATS.`,
+    };
+
+    await sendEmailRecord(record);
+    onRecord('Email');
+    setMessage(`Email saved in ATS for ${emailSettings.provider} delivery. Replies will remain in the mailbox provider and are not imported into ATS.`);
+  }
+
+  if (mode === 'email') {
+    return (
+      <Panel title={`Email: ${candidate.name}`} onClose={onClose}>
+        <form onSubmit={sendCandidateEmail} className="space-y-4">
+          {message && (
+            <div className={cn('rounded-lg border px-3 py-2 text-xs', message.startsWith('Email saved') ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/20 bg-amber-500/10 text-amber-200')}>
+              {message}
+            </div>
+          )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <InfoTile label="From mailbox" value={emailSettings?.email || 'Not connected'} />
+            <InfoTile label="Delivery provider" value={emailSettings?.provider || 'Not configured'} />
+          </div>
+          <Field label="To" value={candidate.email} onChange={() => undefined} disabled />
+          <Field label="CC" value={cc} onChange={setCc} placeholder="optional@email.com" />
+          <Field label="Subject" value={subject} onChange={setSubject} placeholder="Manual subject" />
+          <TextAreaField label="Body" value={body} onChange={setBody} />
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Auto signature</p>
+            <p className="mt-2 whitespace-pre-line text-sm text-slate-300">{signatureLines || 'No signature configured for this user.'}</p>
+            {emailSettings?.signatureImageUrl && <img src={emailSettings.signatureImageUrl} alt="Email signature" className="mt-3 max-h-16 rounded-lg border border-white/10 object-contain" />}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button type="button" onClick={() => setMode('menu')} className="rounded-lg bg-white/5 px-4 py-3 text-sm text-slate-300 hover:bg-white/10">Back</button>
+            <button type="submit" className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500">
+              <Send size={15} />
+              Send
+            </button>
+          </div>
+        </form>
+      </Panel>
+    );
+  }
+
   return (
     <Panel title={`Connect: ${candidate.name}`} onClose={onClose}>
       <div className="space-y-3">
-        <ConnectAction icon={<Mail size={16} />} label="Email" value={candidate.email} onClick={() => onRecord('Email')} />
+        <ConnectAction icon={<Mail size={16} />} label="Email" value={candidate.email || 'Candidate email missing'} onClick={() => setMode('email')} />
         <ConnectAction icon={<Phone size={16} />} label="Call" value={candidate.phone} onClick={() => onRecord('Call')} />
         <ConnectAction icon={<MessageSquarePlus size={16} />} label="Log Outreach" value="Candidate outreach logged" onClick={() => onRecord('Outreach log')} />
       </div>

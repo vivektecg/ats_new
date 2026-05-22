@@ -1,5 +1,6 @@
 import type { Candidate, CandidateDocument, Client, EmailRecord, Interview, ResumeVersion, Submission, Task, Vendor } from './types';
 import type { ComplianceCase, OnboardingCase } from './onboardingStore';
+import { getSession } from './auth';
 
 export const LOCAL_CANDIDATES_KEY = 'eventus:test:candidates';
 export const LOCAL_JOBS_KEY = 'eventus:test:jobs';
@@ -71,7 +72,7 @@ export type EmailIntegration = {
   id: string;
   userId: string;
   userName: string;
-  provider: 'Outlook / IMAP' | 'IMAP / SMTP';
+  provider: 'Outlook' | 'IMAP/SMTP' | 'Gmail' | 'Outlook / IMAP' | 'IMAP / SMTP';
   emailAddress: string;
   imapHost: string;
   imapPort: number;
@@ -105,6 +106,25 @@ const collectionKeys: Partial<Record<AtsCollection, string>> = {
 
 function apiRoot() {
   return (import.meta.env.VITE_ATS_API_URL || '/api/ats').replace(/\/$/, '');
+}
+
+function sessionHeaders() {
+  const session = getSession();
+  if (!session) return {};
+  try {
+    return {
+      'X-Eventus-Session': window.btoa(unescape(encodeURIComponent(JSON.stringify(session)))),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function requestHeaders(init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  headers.set('Content-Type', 'application/json');
+  Object.entries(sessionHeaders()).forEach(([key, value]) => headers.set(key, value));
+  return headers;
 }
 
 export function shouldUseDemoData() {
@@ -147,22 +167,20 @@ async function requestJsonResult<T>(path: string, init?: RequestInit): Promise<R
   try {
     const response = await fetch(`${apiRoot()}${path}`, {
       ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init?.headers ?? {}),
-      },
+      headers: requestHeaders(init),
     });
+    const body = await response.json().catch(() => null) as T | null;
     if (!response.ok) {
       return {
         ok: false,
         status: response.status,
-        data: null,
+        data: body,
       };
     }
     return {
       ok: true,
       status: response.status,
-      data: await response.json() as T,
+      data: body,
     };
   } catch {
     return {
@@ -224,7 +242,7 @@ export async function submitSubmissionRow(row: Submission) {
   try {
     const response = await fetch(`${apiRoot()}/submissions/submit`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: requestHeaders(),
       body: JSON.stringify(row),
     });
     const body = await response.json().catch(() => null) as {
@@ -292,6 +310,23 @@ export async function connectEmailIntegration(input: Omit<EmailIntegration, 'id'
   }
   writeLocalRows(LOCAL_EMAIL_INTEGRATIONS_KEY, body.rows, 'emailIntegrations');
   return body.row;
+}
+
+export async function runGithubBackup() {
+  return requestJsonResult<{
+    ok: boolean;
+    localOnly?: boolean;
+    localPath?: string;
+    githubPath?: string;
+    githubUrl?: string;
+    totalRecords?: number;
+    atsCounts?: Record<string, number>;
+    authCounts?: Record<string, number>;
+    message: string;
+  }>('/github/backup', {
+    method: 'POST',
+    body: JSON.stringify({ requestedAt: new Date().toISOString() }),
+  });
 }
 
 export async function sendEmailRecord(record: EmailRecord) {

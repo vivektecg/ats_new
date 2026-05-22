@@ -10,7 +10,6 @@ export type SectionKey =
   | 'offers'
   | 'onboarding'
   | 'imports'
-  | 'emails'
   | 'documents'
   | 'pipeline'
   | 'calendar'
@@ -39,6 +38,17 @@ export interface AppUser {
   passwordUpdatedAt?: string;
   lastPasswordResetEmailAt?: string;
   avatarUrl?: string;
+  outlookEmail?: string;
+  outlookConnected?: boolean;
+  emailProvider?: 'Outlook' | 'IMAP/SMTP' | 'Gmail';
+  imapHost?: string;
+  imapPort?: string;
+  smtpHost?: string;
+  smtpPort?: string;
+  signatureText?: string;
+  signatureImageUrl?: string;
+  signatureTitle?: string;
+  signaturePhone?: string;
 }
 
 export interface AuthSession {
@@ -48,6 +58,15 @@ export interface AuthSession {
   role: UserRole;
   permissions: SectionKey[];
   loginAt: string;
+  avatarUrl?: string;
+}
+
+export interface AtsOwner {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  active: boolean;
   avatarUrl?: string;
 }
 
@@ -91,6 +110,17 @@ export interface SuperUserProfile {
   phone?: string;
   title?: string;
   avatarUrl?: string;
+  outlookEmail?: string;
+  outlookConnected?: boolean;
+  emailProvider?: 'Outlook' | 'IMAP/SMTP' | 'Gmail';
+  imapHost?: string;
+  imapPort?: string;
+  smtpHost?: string;
+  smtpPort?: string;
+  signatureText?: string;
+  signatureImageUrl?: string;
+  signatureTitle?: string;
+  signaturePhone?: string;
   updatedAt?: string;
 }
 
@@ -111,11 +141,9 @@ export const allSections: Array<{ key: SectionKey; label: string; path: string; 
   { key: 'offers', label: 'Offers', path: '/offers', sensitive: true },
   { key: 'onboarding', label: 'Onboarding', path: '/onboarding', sensitive: true },
   { key: 'imports', label: 'Bulk Import', path: '/imports', sensitive: true },
-  { key: 'emails', label: 'Email Center', path: '/emails', sensitive: true },
   { key: 'documents', label: 'Documents', path: '/documents', sensitive: true },
   { key: 'pipeline', label: 'Pipeline', path: '/pipeline' },
   { key: 'calendar', label: 'Calendar', path: '/calendar' },
-  { key: 'calendar', label: 'Interviews', path: '/interviews' },
   { key: 'tasks', label: 'Tasks', path: '/tasks' },
   { key: 'automations', label: 'Automations', path: '/automations' },
   { key: 'compliance', label: 'Audit Logs', path: '/compliance', sensitive: true },
@@ -123,8 +151,12 @@ export const allSections: Array<{ key: SectionKey; label: string; path: string; 
   { key: 'reports', label: 'Reports', path: '/reports' },
   { key: 'integrations', label: 'Integrations', path: '/integrations' },
   { key: 'ai-assistant', label: 'AI Assistant', path: '/ai-assistant' },
-  { key: 'ai-assistant', label: 'AI Tools', path: '/ai' },
   { key: 'users', label: 'User Management', path: '/users', sensitive: true },
+];
+
+const sectionPathAliases: Array<{ key: SectionKey; path: string }> = [
+  { key: 'calendar', path: '/interviews' },
+  { key: 'ai-assistant', path: '/ai' },
 ];
 
 export const defaultUserPermissions: SectionKey[] = [
@@ -135,7 +167,6 @@ export const defaultUserPermissions: SectionKey[] = [
   'offers',
   'onboarding',
   'imports',
-  'emails',
   'documents',
   'pipeline',
   'calendar',
@@ -154,6 +185,17 @@ const defaultSuperUserProfile: SuperUserProfile = {
   phone: '',
   title: 'System Owner',
   avatarUrl: '',
+  outlookEmail: '',
+  outlookConnected: false,
+  emailProvider: 'Outlook',
+  imapHost: 'outlook.office365.com',
+  imapPort: '993',
+  smtpHost: 'smtp.office365.com',
+  smtpPort: '587',
+  signatureText: '',
+  signatureImageUrl: '',
+  signatureTitle: '',
+  signaturePhone: '',
 };
 let authHydrationPromise: Promise<void> | null = null;
 
@@ -172,6 +214,17 @@ function normalizeSuperUserProfile(profile: Partial<SuperUserProfile> | null | u
     phone: String(profile?.phone || ''),
     title: String(profile?.title || defaultSuperUserProfile.title || ''),
     avatarUrl: String(profile?.avatarUrl || ''),
+    outlookEmail: String(profile?.outlookEmail || ''),
+    outlookConnected: Boolean(profile?.outlookConnected),
+    emailProvider: (profile?.emailProvider === 'Gmail' || profile?.emailProvider === 'IMAP/SMTP') ? profile.emailProvider : 'Outlook',
+    imapHost: String(profile?.imapHost || 'outlook.office365.com'),
+    imapPort: String(profile?.imapPort || '993'),
+    smtpHost: String(profile?.smtpHost || 'smtp.office365.com'),
+    smtpPort: String(profile?.smtpPort || '587'),
+    signatureText: String(profile?.signatureText || ''),
+    signatureImageUrl: String(profile?.signatureImageUrl || ''),
+    signatureTitle: String(profile?.signatureTitle || ''),
+    signaturePhone: String(profile?.signaturePhone || ''),
     updatedAt: profile?.updatedAt,
   };
 }
@@ -596,7 +649,10 @@ export function completeAuthenticatedPasswordChange(newPassword: string) {
 export function resolveSession(): AuthSession | null {
   const session = getSession();
   if (!session) return null;
-  if (session.role === 'SuperUser') return session;
+  if (session.role === 'SuperUser') {
+    const superUser = makeSuperUserSession();
+    return { ...superUser, loginAt: session.loginAt };
+  }
 
   const user = getUsers().find(savedUser => savedUser.id === session.id && savedUser.email === session.email);
   if (!user || !user.active || user.passwordBlocked) {
@@ -617,6 +673,46 @@ export function resolveSession(): AuthSession | null {
   return currentSession;
 }
 
+export function getAtsOwners(includeInactive = false): AtsOwner[] {
+  const superUser = readLocalSuperUserProfile();
+  const owners: AtsOwner[] = [
+    {
+      id: SUPERUSER_ID,
+      name: superUser.name,
+      email: superUser.email,
+      role: 'SuperUser',
+      active: true,
+      avatarUrl: superUser.avatarUrl || undefined,
+    },
+    ...getUsers()
+      .filter(user => includeInactive || user.active)
+      .map(user => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        active: user.active,
+        avatarUrl: user.avatarUrl,
+      })),
+  ];
+
+  const seen = new Set<string>();
+  return owners.filter(owner => {
+    const key = owner.email.toLowerCase() || owner.id;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function getAtsOwnerNames(includeInactive = false) {
+  return [...getAtsOwners(includeInactive).map(owner => owner.name), 'All Team'];
+}
+
+export function currentOwnerName(fallback = 'SuperUser') {
+  return resolveSession()?.name || getAtsOwners()[0]?.name || fallback;
+}
+
 export function canAccess(session: AuthSession | null, section: SectionKey) {
   if (!session) return false;
   if (session.role === 'SuperUser') return true;
@@ -625,7 +721,7 @@ export function canAccess(session: AuthSession | null, section: SectionKey) {
 }
 
 export function sectionForPath(pathname: string): SectionKey {
-  const match = allSections
+  const match = [...allSections, ...sectionPathAliases]
     .filter(section => pathname === section.path || pathname.startsWith(`${section.path}/`))
     .sort((a, b) => b.path.length - a.path.length)[0];
   return match?.key ?? 'dashboard';

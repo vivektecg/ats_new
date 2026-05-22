@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { upsertRow } from '@/lib/atsApi';
+import { currentOwnerName } from '@/lib/auth';
 import type { Client } from '@/lib/types';
 
 interface ClientFormState {
@@ -138,7 +139,7 @@ export default function ClientForm() {
       totalPlacements: Number(form.totalPlacements) || 0,
       activeJobs: Number(form.activeJobs) || 0,
       revenue: '$0',
-      recruiter: form.recruiter.trim() || 'Unassigned',
+      recruiter: form.recruiter.trim() || currentOwnerName(),
       notes: form.notes.trim() || 'No notes added.',
       createdAt: new Date().toISOString().slice(0, 10),
     };

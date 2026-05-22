@@ -9,6 +9,7 @@ import {
 import { clients as seedClients } from '@/lib/data';
 import { ATS_RECORDS_UPDATED_EVENT, normalizeJobRecord } from '@/lib/atsLocalStore';
 import { LOCAL_CLIENTS_KEY, LOCAL_JOBS_KEY, readLocalRows, saveRows } from '@/lib/atsApi';
+import { currentOwnerName, getAtsOwnerNames, resolveSession } from '@/lib/auth';
 import type { Client, Priority } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
@@ -62,6 +63,13 @@ type JobRecord = {
   boardBoolean: string;
   notes: string[];
   history: string[];
+  recruiter?: string;
+  createdBy?: string;
+  createdByUserId?: string;
+  createdByEmail?: string;
+  updatedBy?: string;
+  updatedByUserId?: string;
+  updatedByEmail?: string;
 };
 
 type JobFormState = Omit<JobRecord, 'id' | 'submissions' | 'aiSearchKeywords' | 'linkedInBoolean' | 'boardBoolean' | 'notes' | 'history'> & {
@@ -81,7 +89,6 @@ const workModes: WorkMode[] = ['Remote', 'Hybrid', 'Onsite'];
 const employmentTypes: EmploymentType[] = ['Contract', 'C2C', 'W2', 'Full-time', 'Part-time'];
 const jobStatuses: JobWorkflowStatus[] = ['Open', 'Hold', 'Closed', 'Filled', 'Cancelled'];
 const priorities: Priority[] = ['Low', 'Medium', 'High', 'Critical'];
-const recruiters = ['Sarah Chen', 'James Park', 'Maria Torres', 'All Team'];
 const visaOptions = [
   'Any visa',
   'US Citizen',
@@ -137,7 +144,7 @@ const emptyJobForm: JobFormState = {
   jobDescription: '',
   submissionDeadline: '',
   priorityLevel: 'Medium',
-  assignedRecruiter: 'Sarah Chen',
+  assignedRecruiter: 'SuperUser',
   jobStatus: 'Open',
   openings: 1,
   jdFile: '',
@@ -235,6 +242,7 @@ function jobFromForm(form: JobFormState, id: string, previous?: JobRecord): JobR
   const visas = form.visaRestrictions.includes('Other') && form.otherVisa.trim()
     ? [...form.visaRestrictions.filter(visa => visa !== 'Other'), form.otherVisa.trim()]
     : form.visaRestrictions;
+  const session = resolveSession();
 
   return {
     id,
@@ -260,6 +268,13 @@ function jobFromForm(form: JobFormState, id: string, previous?: JobRecord): JobR
     submissionDeadline: form.submissionDeadline,
     priorityLevel: form.priorityLevel,
     assignedRecruiter: form.assignedRecruiter,
+    recruiter: form.assignedRecruiter,
+    createdBy: previous?.createdBy ?? session?.name ?? form.assignedRecruiter,
+    createdByUserId: previous?.createdByUserId ?? session?.id,
+    createdByEmail: previous?.createdByEmail ?? session?.email,
+    updatedBy: session?.name ?? form.assignedRecruiter,
+    updatedByUserId: session?.id,
+    updatedByEmail: session?.email,
     jobStatus: form.jobStatus,
     openings: Number(form.openings) || 1,
     submissions: previous?.submissions ?? 0,
@@ -305,6 +320,8 @@ export default function Jobs() {
   const [action, setAction] = useState<JobAction>(null);
   const [notice, setNotice] = useState('Jobs module is ready for job-order updates.');
   const [clientOptions, setClientOptions] = useState<Client[]>(loadAllClients);
+  const recruiterOptions = useMemo(() => getAtsOwnerNames(), []);
+  const newJobForm = useMemo(() => ({ ...emptyJobForm, assignedRecruiter: currentOwnerName() }), []);
 
   useEffect(() => {
     if (location.pathname === '/jobs/new') {
@@ -582,10 +599,10 @@ export default function Jobs() {
       </div>
 
       {action?.type === 'add' && (
-        <JobFormPanel title="Add Job" initial={emptyJobForm} submitLabel="Add Job" onClose={() => setAction(null)} onSubmit={form => upsertJob(form)} clients={clientOptions} />
+        <JobFormPanel title="Add Job" initial={newJobForm} submitLabel="Add Job" onClose={() => setAction(null)} onSubmit={form => upsertJob(form)} clients={clientOptions} recruiters={recruiterOptions} />
       )}
       {action?.type === 'edit' && (
-        <JobFormPanel title={`Edit ${action.job.jobTitle}`} initial={formFromJob(action.job)} submitLabel="Update Job" onClose={() => setAction(null)} onSubmit={form => upsertJob(form, action.job)} clients={clientOptions} />
+        <JobFormPanel title={`Edit ${action.job.jobTitle}`} initial={formFromJob(action.job)} submitLabel="Update Job" onClose={() => setAction(null)} onSubmit={form => upsertJob(form, action.job)} clients={clientOptions} recruiters={recruiterOptions} />
       )}
       {action?.type === 'upload' && (
         <UploadPanel job={action.job} onClose={() => setAction(null)} onSubmit={file => {
@@ -701,6 +718,7 @@ function JobFormPanel({
   onClose,
   onSubmit,
   clients,
+  recruiters,
 }: {
   title: string;
   initial: JobFormState;
@@ -708,11 +726,16 @@ function JobFormPanel({
   onClose: () => void;
   onSubmit: (form: JobFormState) => void;
   clients: Client[];
+  recruiters: string[];
 }) {
   const [form, setForm] = useState(initial);
   const [error, setError] = useState('');
   const hasOtherVisa = form.visaRestrictions.includes('Other');
   const selectedClient = clients.find(client => client.id === form.clientId);
+  const visibleRecruiters = useMemo(
+    () => form.assignedRecruiter && !recruiters.includes(form.assignedRecruiter) ? [form.assignedRecruiter, ...recruiters] : recruiters,
+    [form.assignedRecruiter, recruiters]
+  );
 
   function update<K extends keyof JobFormState>(key: K, value: JobFormState[K]) {
     setForm(previous => ({ ...previous, [key]: value }));
@@ -786,7 +809,7 @@ function JobFormPanel({
           <Field label="Education requirement" value={form.educationRequirement} onChange={value => update('educationRequirement', value)} />
           <Field label="Submission deadline" type="date" value={form.submissionDeadline} onChange={value => update('submissionDeadline', value)} />
           <SelectField label="Priority level" value={form.priorityLevel} options={priorities} onChange={value => update('priorityLevel', value as Priority)} />
-          <SelectField label="Assigned recruiter" value={form.assignedRecruiter} options={recruiters} onChange={value => update('assignedRecruiter', value)} />
+          <SelectField label="Assigned recruiter" value={form.assignedRecruiter} options={visibleRecruiters} onChange={value => update('assignedRecruiter', value)} />
           <SelectField label="Job status" value={form.jobStatus} options={jobStatuses} onChange={value => update('jobStatus', value as JobWorkflowStatus)} />
           <Field label="Openings" value={String(form.openings)} onChange={value => update('openings', Number(value) || 1)} />
           <FileUploadField

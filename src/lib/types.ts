@@ -145,6 +145,9 @@ export interface EmailRecord {
   status: 'Draft' | 'Sent';
   sentAt: string;
   sender: string;
+  deliveryProvider?: string;
+  deliveryStatus?: 'Queued' | 'Sent' | 'Provider Pending' | 'Failed';
+  providerMessage?: string;
 }
 
 export interface Submission {

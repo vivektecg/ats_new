@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, Bell, Plus, ChevronDown, LogOut,
-  Briefcase, Users, Building2, Handshake, Mail, CalendarClock, Send, FolderKanban, BadgeDollarSign,
+  Briefcase, Users, Building2, Handshake, CalendarClock, Send, FolderKanban, BadgeDollarSign,
   UserCog,
 } from 'lucide-react';
 import { canAccess, clearSession, resolveSession, SectionKey, SESSION_UPDATED_EVENT } from '@/lib/auth';
@@ -26,7 +26,6 @@ const routeLabels: Record<string, string> = {
   '/offers': 'Offers',
   '/onboarding': 'Onboarding',
   '/imports': 'Bulk Import',
-  '/emails': 'Email Center',
   '/documents': 'Document Management',
   '/pipeline': 'Pipeline',
   '/calendar': 'Calendar',
@@ -47,7 +46,6 @@ const addActions: Array<{ label: string; icon: typeof Users; path: string; secti
   { label: 'Add Job',             icon: Briefcase,     path: '/jobs/new',          section: 'jobs',        color: 'text-cyan-400' },
   { label: 'Add Client',          icon: Building2,     path: '/clients/new',       section: 'clients',     color: 'text-emerald-400' },
   { label: 'Add Vendor',          icon: Handshake,     path: '/vendors?add=1',     section: 'vendors',     color: 'text-amber-400' },
-  { label: 'Send Email',          icon: Mail,          path: '/emails',            section: 'emails',      color: 'text-violet-400' },
   { label: 'New Submission',      icon: Send,          path: '/submissions?add=1', section: 'submissions', color: 'text-blue-400' },
   { label: 'New Offer',           icon: BadgeDollarSign, path: '/offers',          section: 'offers',      color: 'text-emerald-400' },
   { label: 'Start Onboarding',     icon: BadgeDollarSign, path: '/onboarding',      section: 'onboarding',  color: 'text-blue-400' },

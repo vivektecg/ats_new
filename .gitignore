@@ -13,6 +13,7 @@ dist-ssr
 *.local
 .env
 .env.*
+!.env.example
 !deploy/azure/.env.production.example
 .codex-run/
 server/data/*.json

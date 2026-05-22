@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { canAccess, resolveSession, SectionKey } from '@/lib/auth';
 import { BRAND_LOGO, BRAND_NAME, BRAND_TAGLINE } from '@/lib/brand';
-import { LayoutDashboard, Users, Briefcase, Building2, Handshake, Send, Mail, FolderKanban, GitBranch, Calendar, SquareCheck as CheckSquare, Zap, ShieldCheck, ChartBar as BarChart3, Puzzle, Sparkles, ChevronLeft, ChevronRight, UserCog, BadgeDollarSign, UploadCloud, ClipboardCheck, UserCheck } from 'lucide-react';
+import { LayoutDashboard, Users, Briefcase, Building2, Handshake, Send, FolderKanban, GitBranch, Calendar, SquareCheck as CheckSquare, Zap, ShieldCheck, ChartBar as BarChart3, Puzzle, Sparkles, ChevronLeft, ChevronRight, UserCog, BadgeDollarSign, UploadCloud, ClipboardCheck, UserCheck } from 'lucide-react';
 
 const navItems: Array<{ label: string; icon: typeof LayoutDashboard; path: string; section: SectionKey }> = [
   { label: 'Dashboard',       icon: LayoutDashboard, path: '/dashboard',    section: 'dashboard' },
@@ -16,7 +16,6 @@ const navItems: Array<{ label: string; icon: typeof LayoutDashboard; path: strin
   { label: 'Offers',          icon: BadgeDollarSign, path: '/offers',       section: 'offers' },
   { label: 'Onboarding',      icon: ClipboardCheck,  path: '/onboarding',   section: 'onboarding' },
   { label: 'Bulk Import',     icon: UploadCloud,     path: '/imports',      section: 'imports' },
-  { label: 'Email Center',    icon: Mail,            path: '/emails',       section: 'emails' },
   { label: 'Documents',       icon: FolderKanban,    path: '/documents',    section: 'documents' },
   { label: 'Pipeline',        icon: GitBranch,       path: '/pipeline',     section: 'pipeline' },
   { label: 'Calendar',        icon: Calendar,        path: '/calendar',     section: 'calendar' },

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { upsertLocalCandidates, upsertLocalJobs } from '@/lib/atsLocalStore';
 import { LOCAL_INTEGRATIONS_KEY, LOCAL_SYNC_LOGS_KEY, saveRows } from '@/lib/atsApi';
+import { currentOwnerName } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 
 type IntegrationStatus = 'connected' | 'disconnected' | 'syncing';
@@ -315,7 +316,7 @@ function syncAtsRecords(integration: IntegrationRecord) {
         skills: source === 'Indeed' ? ['SQL', 'Python', 'Analytics'] : ['Recruiting Source Match', 'Screening Pending'],
         source,
         warning: integration.category === 'Email' ? 'Imported from mailbox; resume/profile review pending' : '',
-        recruiter: integration.config.defaultRecruiter || 'SuperUser',
+        recruiter: integration.config.defaultRecruiter || currentOwnerName(),
       },
     ]);
     candidatesImported = result.imported;
@@ -327,7 +328,7 @@ function syncAtsRecords(integration: IntegrationRecord) {
         externalJobId: `${source.toUpperCase().replace(/[^\w]+/g, '-')}-SYNC`,
         jobTitle: `${source} Synced Job`,
         clientName: integration.config.companyName || 'Eventus Client',
-        spocName: integration.config.defaultRecruiter || 'SuperUser',
+        spocName: integration.config.defaultRecruiter || currentOwnerName(),
         location: 'Remote',
         mandatorySkills: 'ATS sync, Candidate screening, Communication',
         preferredSkills: 'US staffing, Job board workflow',

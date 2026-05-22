@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { jobs, submissions, vendors } from '@/lib/data';
 import { LOCAL_VENDORS_KEY, saveRows } from '@/lib/atsApi';
+import { currentOwnerName } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import type { Vendor } from '@/lib/types';
 
@@ -131,7 +132,7 @@ export default function Vendors() {
       notes: form.notes.trim() || 'No notes added.',
       jobIds: form.jobIds,
       submissionIds: form.submissionIds,
-      recruiter: form.recruiter.trim() || 'Unassigned',
+      recruiter: form.recruiter.trim() || currentOwnerName(),
       createdAt: new Date().toISOString().slice(0, 10),
     };
 

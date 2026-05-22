@@ -90,6 +90,7 @@ export async function createSubmissionRecord(draft: Submission): Promise<CreateS
 }
 
 export function buildCandidateJobSubmission(candidate: Candidate, job: Job, note = 'Submitted from candidate quick action.'): Submission {
+  const session = resolveSession();
   return {
     id: `submission-${Date.now()}-${candidate.id}-${job.id}`,
     candidateId: candidate.id,
@@ -100,7 +101,7 @@ export function buildCandidateJobSubmission(candidate: Candidate, job: Job, note
     clientName: job.client,
     status: 'Submitted',
     submittedDate: todayDate(),
-    recruiter: candidate.recruiter,
+    recruiter: session?.name || candidate.recruiter,
     rate: candidate.salary,
     payRate: candidate.salary,
     billRate: job.salary,

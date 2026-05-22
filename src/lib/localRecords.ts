@@ -1,6 +1,7 @@
 import { candidateDocuments, candidates, clients, interviews, jobs, submissions, tasks } from './data';
 import { LOCAL_CANDIDATES_KEY, LOCAL_JOBS_KEY } from './atsLocalStore';
 import { LOCAL_CLIENTS_KEY, LOCAL_DOCUMENTS_KEY, LOCAL_INTERVIEWS_KEY, LOCAL_SUBMISSIONS_KEY, LOCAL_TASKS_KEY, shouldUseDemoData } from './atsApi';
+import { currentOwnerName } from './auth';
 import type { Candidate, CandidateDocument, CandidateStatus, Client, Interview, Job, JobStatus, Priority, Submission, Task } from './types';
 
 type LooseRecord = Record<string, unknown>;
@@ -78,7 +79,7 @@ function toCandidate(record: LooseRecord): Candidate {
     salary: text(record.salary ?? record.expectedRate ?? record.currentRate, 'Open'),
     availability: text(record.availability, 'Needs confirmation'),
     source: text(record.source, 'Manual'),
-    recruiter: text(record.recruiter ?? record.owner, 'SuperUser'),
+    recruiter: text(record.recruiter ?? record.owner, currentOwnerName()),
     createdAt: text(record.createdAt, new Date().toISOString().slice(0, 10)),
     updatedAt: text(record.updatedAt, new Date().toISOString().slice(0, 10)),
     summary: text(record.summary, firstNote(record.notes) ?? 'Manual candidate record.'),
@@ -109,7 +110,7 @@ function toJob(record: LooseRecord): Job {
     salary: text(record.billRate ?? record.payRate ?? record.salary, 'Open'),
     openings: numberValue(record.openings, 1),
     filled: numberValue(record.filled),
-    recruiter: text(record.assignedRecruiter ?? record.recruiter, 'SuperUser'),
+    recruiter: text(record.assignedRecruiter ?? record.recruiter, currentOwnerName()),
     description: text(record.jobDescription ?? record.description),
     requirements,
     postedDate: text(record.postedDate, new Date().toISOString().slice(0, 10)),
