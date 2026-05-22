@@ -1,0 +1,92 @@
+{
+  "backupVersion": 1,
+  "generatedAt": "2026-05-22T21:12:06.991Z",
+  "generatedBy": {
+    "id": "SuperUser",
+    "name": "SuperUser",
+    "email": "vivekk@theeventusconsultinggroup.com",
+    "role": "SuperUser"
+  },
+  "storage": "json",
+  "summary": {
+    "totalRecords": 1,
+    "atsCounts": {
+      "candidates": 0,
+      "jobs": 0,
+      "clients": 0,
+      "vendors": 0,
+      "submissions": 0,
+      "interviews": 0,
+      "tasks": 0,
+      "candidateDocuments": 0,
+      "resumeVersions": 0,
+      "emailRecords": 0,
+      "emailIntegrations": 0,
+      "onboardingCases": 0,
+      "complianceCases": 0,
+      "callLogs": 0,
+      "automations": 0,
+      "integrations": 0,
+      "integrationSyncLogs": 0
+    },
+    "authCounts": {
+      "users": 0,
+      "superUserProfiles": 1,
+      "passwordResetRequests": 0,
+      "passwordEmailOutbox": 0
+    }
+  },
+  "atsData": {
+    "candidates": [],
+    "authMetadata": [
+      {
+        "id": "superuser-profile",
+        "name": "SuperUser",
+        "email": "vivekk@theeventusconsultinggroup.com",
+        "passwordHash": "ZXZlbnR1czpNYW52aWtrMTk4MUA=",
+        "avatarUrl": "",
+        "outlookEmail": "",
+        "outlookConnected": false,
+        "emailProvider": "Outlook",
+        "imapHost": "outlook.office365.com",
+        "imapPort": "993",
+        "smtpHost": "smtp.office365.com",
+        "smtpPort": "587",
+        "signatureText": "",
+        "signatureImageUrl": "",
+        "signatureTitle": "",
+        "signaturePhone": "",
+        "phone": "",
+        "title": "System Owner",
+        "updatedAt": "2026-05-22T20:22:26.663Z"
+      }
+    ]
+  },
+  "authData": {
+    "users": [],
+    "superUser": {
+      "id": "superuser-profile",
+      "name": "SuperUser",
+      "email": "vivekk@theeventusconsultinggroup.com",
+      "passwordHash": "ZXZlbnR1czpNYW52aWtrMTk4MUA=",
+      "avatarUrl": "",
+      "outlookEmail": "",
+      "outlookConnected": false,
+      "emailProvider": "Outlook",
+      "imapHost": "outlook.office365.com",
+      "imapPort": "993",
+      "smtpHost": "smtp.office365.com",
+      "smtpPort": "587",
+      "signatureText": "",
+      "signatureImageUrl": "",
+      "signatureTitle": "",
+      "signaturePhone": "",
+      "phone": "",
+      "title": "System Owner",
+      "updatedAt": "2026-05-22T20:22:26.663Z"
+    },
+    "passwordResetRequests": [],
+    "passwordEmailOutbox": []
+  },
+  "attachmentNote": "This backup includes all ATS JSON records and stored data URLs. Browser-only uploads saved only as metadata do not contain original binary file bytes."
+}
