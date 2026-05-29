@@ -11,6 +11,7 @@ import { ATS_RECORDS_UPDATED_EVENT, LOCAL_CANDIDATES_KEY, normalizeCandidateReco
 import { saveRows, sendEmailRecord } from '@/lib/atsApi';
 import { currentOwnerName, getAtsOwnerNames, resolveSession } from '@/lib/auth';
 import { formatCallDuration, openCandidateDialer, saveCandidateCallLog, type CallOutcome } from '@/lib/callLogs';
+import { currentCallingSettings } from '@/lib/callingSettings';
 import { currentEmailSettings, emailSignatureText } from '@/lib/emailSettings';
 import { createCandidateJobSubmission, duplicateSubmissionMessage, findCandidateJobSubmission } from '@/lib/submissionStore';
 import type { Candidate, CandidateStatus, EmailRecord } from '@/lib/types';
@@ -1751,6 +1752,7 @@ function CallPanel({
   const [seconds, setSeconds] = useState('0');
   const [notes, setNotes] = useState('');
   const [started, setStarted] = useState(false);
+  const callingSettings = currentCallingSettings();
   const durationSeconds = Math.max(0, (Number(minutes) || 0) * 60 + (Number(seconds) || 0));
 
   function startCall() {
@@ -1774,7 +1776,13 @@ function CallPanel({
         <div className="rounded-lg border border-white/5 bg-white/[0.03] p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Candidate phone</p>
           <p className="mt-1 text-lg font-semibold text-white">{candidate.phone || 'No phone number added'}</p>
-          <p className="mt-2 text-xs leading-relaxed text-slate-500">Browser calling uses your device phone app. Production auto-duration requires Twilio, RingCentral, Vonage, or Teams Phone webhooks.</p>
+          <div className="mt-3 grid gap-2 rounded-lg border border-white/5 bg-white/[0.03] p-3 text-xs sm:grid-cols-2">
+            <InfoTile label="ATS calling number" value={callingSettings?.number || 'Not assigned'} />
+            <InfoTile label="Calling provider" value={callingSettings?.provider || 'Not configured'} />
+            {callingSettings?.extension && <InfoTile label="Extension / SIP user" value={callingSettings.extension} />}
+            <InfoTile label="Connection" value={callingSettings?.connected ? 'Connected' : 'Needs setup'} />
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-slate-500">This opens the device dialer now and logs the assigned ATS calling number. Full browser SIP/WebRTC calling can use these per-user numbers once the VoIP provider endpoint is connected.</p>
         </div>
         <button disabled={!candidate.phone} onClick={startCall} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50">
           <Phone size={16} />

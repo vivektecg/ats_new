@@ -1,5 +1,6 @@
 import { resolveSession } from './auth';
 import { LOCAL_CALL_LOGS_KEY, saveRows } from './atsApi';
+import { currentCallingSettings } from './callingSettings';
 
 export type CallOutcome = 'Initiated' | 'Completed' | 'No Answer' | 'Left Voicemail' | 'Busy' | 'Wrong Number';
 
@@ -15,6 +16,9 @@ export type CandidateCallLog = {
   notes: string;
   recruiterName: string;
   recruiterEmail: string;
+  recruiterCallingProvider?: string;
+  recruiterCallingNumber?: string;
+  recruiterCallingExtension?: string;
   source: 'ATS Quick Call';
 };
 
@@ -34,13 +38,17 @@ export function getCandidateCallLogs(candidateId?: string) {
   return candidateId ? logs.filter(log => log.candidateId === candidateId) : logs;
 }
 
-export function saveCandidateCallLog(log: Omit<CandidateCallLog, 'id' | 'recruiterName' | 'recruiterEmail' | 'source'>) {
+export function saveCandidateCallLog(log: Omit<CandidateCallLog, 'id' | 'recruiterName' | 'recruiterEmail' | 'recruiterCallingProvider' | 'recruiterCallingNumber' | 'recruiterCallingExtension' | 'source'>) {
   const session = resolveSession();
+  const calling = currentCallingSettings();
   const nextLog: CandidateCallLog = {
     ...log,
     id: `call-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     recruiterName: session?.name ?? 'Recruiter',
     recruiterEmail: session?.email ?? 'recruiter@eventus.local',
+    recruiterCallingProvider: calling?.provider,
+    recruiterCallingNumber: calling?.number,
+    recruiterCallingExtension: calling?.extension,
     source: 'ATS Quick Call',
   };
   const nextLogs = [nextLog, ...readLogs()].slice(0, 500);

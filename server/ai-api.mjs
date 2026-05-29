@@ -110,6 +110,10 @@ const DEFAULT_SUPERUSER = {
   signatureImageUrl: '',
   signatureTitle: '',
   signaturePhone: '',
+  callingProvider: 'Manual Dialer',
+  callingNumber: '',
+  callingExtension: '',
+  callingConnected: false,
   phone: '',
   title: 'System Owner',
   updatedAt: '2026-05-21T00:00:00.000Z',
@@ -334,6 +338,10 @@ async function ensureAuthState() {
     signatureImageUrl: String(currentMetadata.signatureImageUrl || ''),
     signatureTitle: String(currentMetadata.signatureTitle || ''),
     signaturePhone: String(currentMetadata.signaturePhone || ''),
+    callingProvider: ['Alliance SIP', 'Twilio', 'RingCentral', 'Vonage'].includes(currentMetadata.callingProvider) ? currentMetadata.callingProvider : 'Manual Dialer',
+    callingNumber: String(currentMetadata.callingNumber || ''),
+    callingExtension: String(currentMetadata.callingExtension || ''),
+    callingConnected: Boolean(currentMetadata.callingConnected),
     updatedAt: String(currentMetadata.updatedAt || new Date().toISOString()),
   };
 
@@ -378,6 +386,10 @@ async function handleAuthState(request, response) {
       signatureImageUrl: String(body?.superUser?.signatureImageUrl || ''),
       signatureTitle: String(body?.superUser?.signatureTitle || ''),
       signaturePhone: String(body?.superUser?.signaturePhone || ''),
+      callingProvider: ['Alliance SIP', 'Twilio', 'RingCentral', 'Vonage'].includes(body?.superUser?.callingProvider) ? body.superUser.callingProvider : 'Manual Dialer',
+      callingNumber: String(body?.superUser?.callingNumber || ''),
+      callingExtension: String(body?.superUser?.callingExtension || ''),
+      callingConnected: Boolean(body?.superUser?.callingConnected),
       updatedAt: new Date().toISOString(),
     };
 

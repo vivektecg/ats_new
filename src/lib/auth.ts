@@ -1,4 +1,5 @@
 export type UserRole = 'SuperUser' | 'User';
+export type CallingProvider = 'Alliance SIP' | 'Twilio' | 'RingCentral' | 'Vonage' | 'Manual Dialer';
 
 export type SectionKey =
   | 'dashboard'
@@ -49,6 +50,10 @@ export interface AppUser {
   signatureImageUrl?: string;
   signatureTitle?: string;
   signaturePhone?: string;
+  callingProvider?: CallingProvider;
+  callingNumber?: string;
+  callingExtension?: string;
+  callingConnected?: boolean;
 }
 
 export interface AuthSession {
@@ -121,6 +126,10 @@ export interface SuperUserProfile {
   signatureImageUrl?: string;
   signatureTitle?: string;
   signaturePhone?: string;
+  callingProvider?: CallingProvider;
+  callingNumber?: string;
+  callingExtension?: string;
+  callingConnected?: boolean;
   updatedAt?: string;
 }
 
@@ -196,6 +205,10 @@ const defaultSuperUserProfile: SuperUserProfile = {
   signatureImageUrl: '',
   signatureTitle: '',
   signaturePhone: '',
+  callingProvider: 'Manual Dialer',
+  callingNumber: '',
+  callingExtension: '',
+  callingConnected: false,
 };
 let authHydrationPromise: Promise<void> | null = null;
 
@@ -225,6 +238,10 @@ function normalizeSuperUserProfile(profile: Partial<SuperUserProfile> | null | u
     signatureImageUrl: String(profile?.signatureImageUrl || ''),
     signatureTitle: String(profile?.signatureTitle || ''),
     signaturePhone: String(profile?.signaturePhone || ''),
+    callingProvider: ['Alliance SIP', 'Twilio', 'RingCentral', 'Vonage'].includes(profile?.callingProvider || '') ? profile?.callingProvider : 'Manual Dialer',
+    callingNumber: String(profile?.callingNumber || ''),
+    callingExtension: String(profile?.callingExtension || ''),
+    callingConnected: Boolean(profile?.callingConnected),
     updatedAt: profile?.updatedAt,
   };
 }

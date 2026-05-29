@@ -29,6 +29,7 @@ import { connectEmailIntegration, outlookOAuthStatus, runGithubBackup, startOutl
 import {
   allSections,
   AppUser,
+  CallingProvider,
   defaultUserPermissions,
   encodePassword,
   getSuperUserProfile,
@@ -49,6 +50,7 @@ import { cn } from '@/lib/utils';
 const assignableSections = allSections.filter(section => section.key !== 'users');
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 type EmailProvider = 'Outlook' | 'IMAP/SMTP' | 'Gmail';
+const callingProviders: CallingProvider[] = ['Alliance SIP', 'Twilio', 'RingCentral', 'Vonage', 'Manual Dialer'];
 
 function makeUserId(email: string) {
   const slug = email.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
@@ -125,6 +127,10 @@ function loadSuperUserProfile(session: ReturnType<typeof resolveSession>) {
     signatureImageUrl: saved.signatureImageUrl ?? '',
     signatureTitle: saved.signatureTitle ?? '',
     signaturePhone: saved.signaturePhone ?? '',
+    callingProvider: saved.callingProvider ?? 'Manual Dialer',
+    callingNumber: saved.callingNumber ?? '',
+    callingExtension: saved.callingExtension ?? '',
+    callingConnected: Boolean(saved.callingConnected),
   };
 }
 
@@ -150,6 +156,10 @@ export default function UserManagement() {
     signatureImageUrl: '',
     signatureTitle: '',
     signaturePhone: '',
+    callingProvider: 'Manual Dialer' as CallingProvider,
+    callingNumber: '',
+    callingExtension: '',
+    callingConnected: false,
   });
   const [superProfile, setSuperProfile] = useState(() => loadSuperUserProfile(session));
   const [superPassword, setSuperPassword] = useState({ current: '', next: '', confirm: '' });
@@ -174,6 +184,10 @@ export default function UserManagement() {
     signatureImageUrl: '',
     signatureTitle: '',
     signaturePhone: '',
+    callingProvider: 'Manual Dialer' as CallingProvider,
+    callingNumber: '',
+    callingExtension: '',
+    callingConnected: false,
     active: true,
     permissions: defaultUserPermissions,
   });
@@ -222,6 +236,10 @@ export default function UserManagement() {
       signatureImageUrl: nextProfile.signatureImageUrl ?? '',
       signatureTitle: nextProfile.signatureTitle ?? '',
       signaturePhone: nextProfile.signaturePhone ?? '',
+      callingProvider: nextProfile.callingProvider ?? 'Manual Dialer',
+      callingNumber: nextProfile.callingNumber ?? '',
+      callingExtension: nextProfile.callingExtension ?? '',
+      callingConnected: Boolean(nextProfile.callingConnected),
     });
     if (session) {
       saveSession({
@@ -354,6 +372,10 @@ export default function UserManagement() {
       signatureImageUrl: selectedUser.signatureImageUrl ?? '',
       signatureTitle: selectedUser.signatureTitle ?? '',
       signaturePhone: selectedUser.signaturePhone ?? '',
+      callingProvider: selectedUser.callingProvider ?? 'Manual Dialer',
+      callingNumber: selectedUser.callingNumber ?? '',
+      callingExtension: selectedUser.callingExtension ?? '',
+      callingConnected: Boolean(selectedUser.callingConnected),
     });
   }, [selectedUser]);
 
@@ -443,6 +465,10 @@ export default function UserManagement() {
       signatureImageUrl: selectedEdit.signatureImageUrl,
       signatureTitle: selectedEdit.signatureTitle.trim(),
       signaturePhone: selectedEdit.signaturePhone.trim(),
+      callingProvider: selectedEdit.callingProvider,
+      callingNumber: selectedEdit.callingNumber.trim(),
+      callingExtension: selectedEdit.callingExtension.trim(),
+      callingConnected: selectedEdit.callingConnected,
       updatedAt: now,
     };
     updateUsers(users.map(user => user.id === selectedUser.id ? {
@@ -534,6 +560,10 @@ export default function UserManagement() {
       signatureImageUrl: form.signatureImageUrl || undefined,
       signatureTitle: form.signatureTitle.trim(),
       signaturePhone: form.signaturePhone.trim(),
+      callingProvider: form.callingProvider,
+      callingNumber: form.callingNumber.trim(),
+      callingExtension: form.callingExtension.trim(),
+      callingConnected: form.callingConnected,
     };
 
     const nextUsers = [user, ...users];
@@ -543,7 +573,7 @@ export default function UserManagement() {
     await syncAuthStateNow();
     setUsers(getUsers());
     setSelectedUserId(user.id);
-    setForm({ name: '', email: '', password: '', avatarUrl: '', outlookEmail: '', outlookConnected: false, emailProvider: 'Outlook' as EmailProvider, imapHost: 'outlook.office365.com', imapPort: '993', smtpHost: 'smtp.office365.com', smtpPort: '587', signatureText: '', signatureImageUrl: '', signatureTitle: '', signaturePhone: '', active: true, permissions: defaultUserPermissions });
+    setForm({ name: '', email: '', password: '', avatarUrl: '', outlookEmail: '', outlookConnected: false, emailProvider: 'Outlook' as EmailProvider, imapHost: 'outlook.office365.com', imapPort: '993', smtpHost: 'smtp.office365.com', smtpPort: '587', signatureText: '', signatureImageUrl: '', signatureTitle: '', signaturePhone: '', callingProvider: 'Manual Dialer' as CallingProvider, callingNumber: '', callingExtension: '', callingConnected: false, active: true, permissions: defaultUserPermissions });
     setLatestResetLink('');
     setMessage('New user login created. Share the temporary password with the user so they can sign in and create their own password.');
   };
@@ -661,6 +691,33 @@ export default function UserManagement() {
             <LabeledInput label="Title / Role" value={superProfile.title} onChange={value => setSuperProfile(current => ({ ...current, title: value }))} />
             <LabeledInput label="Email" value={superProfile.email} onChange={value => setSuperProfile(current => ({ ...current, email: value }))} icon={<Mail size={13} />} />
             <LabeledInput label="Phone" value={superProfile.phone} onChange={value => setSuperProfile(current => ({ ...current, phone: value }))} icon={<Phone size={13} />} />
+          </div>
+          <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+            <div className="mb-3 flex items-center gap-2">
+              <Phone size={14} className="text-emerald-300" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">ATS Calling Number</h3>
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-slate-400">Provider</span>
+                <select
+                  value={superProfile.callingProvider}
+                  onChange={event => setSuperProfile(current => ({ ...current, callingProvider: event.target.value as CallingProvider }))}
+                  className="w-full rounded-lg border border-white/10 bg-[#111827] px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                >
+                  {callingProviders.map(provider => <option key={provider} value={provider}>{provider}</option>)}
+                </select>
+              </label>
+              <LabeledInput label="Assigned US number" value={superProfile.callingNumber} onChange={value => setSuperProfile(current => ({ ...current, callingNumber: value }))} />
+              <LabeledInput label="Extension / SIP user" value={superProfile.callingExtension} onChange={value => setSuperProfile(current => ({ ...current, callingExtension: value }))} />
+              <button
+                type="button"
+                onClick={() => setSuperProfile(current => ({ ...current, callingConnected: !current.callingConnected }))}
+                className={cn('self-end rounded-lg border px-3 py-2.5 text-xs font-semibold', superProfile.callingConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
+              >
+                {superProfile.callingConnected ? 'Calling connected' : 'Calling not connected'}
+              </button>
+            </div>
           </div>
           <button onClick={saveSuperProfile} className="mt-5 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-500">
             <Save size={14} />
@@ -882,6 +939,33 @@ export default function UserManagement() {
                   }}
                 />
               </label>
+            </div>
+
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+              <p className="text-sm font-semibold text-white">Calling Number Integration</p>
+              <p className="mt-1 text-xs text-slate-500">Assign the user's own ATS outbound number for candidate calls and call logs.</p>
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-xs font-medium text-slate-400">Calling provider</span>
+                <select
+                  value={form.callingProvider}
+                  onChange={event => setForm(current => ({ ...current, callingProvider: event.target.value as CallingProvider }))}
+                  className="w-full rounded-lg border border-white/10 bg-[#111827] px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                >
+                  {callingProviders.map(provider => <option key={provider} value={provider}>{provider}</option>)}
+                </select>
+              </label>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <LabeledInput label="Assigned US number" value={form.callingNumber} onChange={value => setForm(current => ({ ...current, callingNumber: value }))} />
+                <LabeledInput label="Extension / SIP user" value={form.callingExtension} onChange={value => setForm(current => ({ ...current, callingExtension: value }))} />
+              </div>
+              <button
+                type="button"
+                onClick={() => setForm(current => ({ ...current, callingConnected: !current.callingConnected }))}
+                className={cn('mt-3 flex w-full items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold', form.callingConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
+              >
+                <span>Calling connection</span>
+                <span>{form.callingConnected ? 'Connected' : 'Not connected'}</span>
+              </button>
             </div>
 
             <label className="block">
@@ -1162,7 +1246,42 @@ export default function UserManagement() {
                       >
                         {selectedEdit.outlookConnected ? 'Mailbox connected' : 'Connect mailbox'}
                       </button>
-                    )}
+	                    )}
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">Calling provider</span>
+                      <select
+                        value={selectedEdit.callingProvider}
+                        onChange={event => setSelectedEdit(current => ({ ...current, callingProvider: event.target.value as CallingProvider }))}
+                        className="w-full rounded-lg border border-white/10 bg-[#111827] px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                      >
+                        {callingProviders.map(provider => <option key={provider} value={provider}>{provider}</option>)}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">Assigned US number</span>
+                      <input
+                        value={selectedEdit.callingNumber}
+                        onChange={event => setSelectedEdit(current => ({ ...current, callingNumber: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                        placeholder="+1 555 010 1234"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-xs font-medium text-slate-400">Extension / SIP user</span>
+                      <input
+                        value={selectedEdit.callingExtension}
+                        onChange={event => setSelectedEdit(current => ({ ...current, callingExtension: event.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
+                        placeholder="1001 or SIP username"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedEdit(current => ({ ...current, callingConnected: !current.callingConnected }))}
+                      className={cn('self-end rounded-lg border px-3 py-2.5 text-xs font-semibold', selectedEdit.callingConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
+                    >
+                      {selectedEdit.callingConnected ? 'Calling connected' : 'Calling not connected'}
+                    </button>
                     <label className="block">
                       <span className="mb-1.5 block text-xs font-medium text-slate-400">Signature title</span>
                       <input
