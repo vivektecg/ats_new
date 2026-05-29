@@ -28,6 +28,14 @@ type PreviewCandidate = {
   title?: string;
   location?: string;
   skills?: string[];
+  experience?: number;
+  education?: string;
+  certifications?: string;
+  workAuthorization?: string;
+  visaStatus?: string;
+  parsedResumeDetails?: string;
+  summary?: string;
+  notes?: string[];
   resumeFile?: string;
   warning?: string;
 };
@@ -84,6 +92,29 @@ function nameFromFile(fileName: string) {
   return fileName.replace(/\.[^.]+$/, '').replace(/resume|cv|profile|[_-]+/gi, ' ').replace(/\s+/g, ' ').trim() || 'Imported Resume Candidate';
 }
 
+const sectionHeadings = [
+  'summary', 'profile', 'objective', 'experience', 'employment', 'work history', 'skills',
+  'technical skills', 'education', 'certifications', 'projects', 'visa', 'authorization',
+  'contact', 'awards', 'publications',
+];
+
+const knownSkills = [
+  'JavaScript', 'TypeScript', 'React', 'Angular', 'Vue', 'Node.js', 'Express', 'Next.js',
+  'HTML', 'CSS', 'Tailwind', 'Bootstrap', 'Java', 'Spring', 'Python', 'Django', 'Flask',
+  'C#', '.NET', 'ASP.NET', 'SQL', 'PostgreSQL', 'MySQL', 'SQL Server', 'Oracle', 'MongoDB',
+  'Redis', 'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'Terraform', 'Jenkins', 'Git',
+  'REST', 'GraphQL', 'API', 'Microservices', 'Agile', 'Scrum', 'Salesforce', 'ServiceNow',
+  'SAP', 'Power BI', 'Tableau', 'Excel', 'ETL', 'Snowflake', 'Databricks', 'Spark',
+  'Machine Learning', 'AI', 'Data Analysis', 'QA', 'Selenium', 'Cypress', 'Playwright',
+  'Jira', 'Linux', 'Windows', 'Networking', 'Security', 'DevOps', 'CI/CD',
+];
+
+const roleKeywords = [
+  'Developer', 'Engineer', 'Architect', 'Analyst', 'Administrator', 'Consultant', 'Manager',
+  'Lead', 'Specialist', 'Recruiter', 'Designer', 'Tester', 'QA', 'Data Scientist',
+  'Scrum Master', 'Product Owner', 'Business Analyst', 'Project Manager',
+];
+
 function normalizeHeader(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -95,6 +126,181 @@ function pick(row: ExcelRow, headers: string[]) {
     if (found && found[1] != null) return String(found[1]).trim();
   }
   return '';
+}
+
+function compactText(value: string) {
+  return value.replace(/\r/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function cleanRtf(value: string) {
+  return compactText(value
+    .replace(/\\'[0-9a-fA-F]{2}/g, ' ')
+    .replace(/\\[a-zA-Z]+\d* ?/g, ' ')
+    .replace(/[{}]/g, ' '));
+}
+
+function extractPdfText(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 8192;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
+  }
+  const matches = [...binary.matchAll(/\((?:\\.|[^\\)]){2,}\)/g)]
+    .map(match => match[0].slice(1, -1).replace(/\\[nrtbf()]/g, ' '))
+    .filter(text => /[a-zA-Z@]/.test(text));
+  return compactText(matches.join('\n'));
+}
+
+function cleanBinaryText(value: string) {
+  return compactText(Array.from(value).map(character => {
+    const code = character.charCodeAt(0);
+    return code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 126) ? character : ' ';
+  }).join(''));
+}
+
+async function readResumeText(file: File) {
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  if (['txt', 'text', 'md'].includes(extension)) return compactText(await file.text());
+  if (['rtf'].includes(extension)) return cleanRtf(await file.text());
+  if (extension === 'pdf') return extractPdfText(await file.arrayBuffer());
+  if (extension === 'docx' || extension === 'zip') return '';
+  return cleanBinaryText(await file.text().catch(() => ''));
+}
+
+function lineLooksLikeHeading(line: string) {
+  const normalized = line.trim().toLowerCase().replace(/:$/, '');
+  return sectionHeadings.some(heading => normalized === heading || normalized.includes(heading));
+}
+
+function extractSection(text: string, headingPatterns: RegExp[]) {
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  const startIndex = lines.findIndex(line => headingPatterns.some(pattern => pattern.test(line)));
+  if (startIndex < 0) return '';
+  const picked: string[] = [];
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    if (picked.length && lineLooksLikeHeading(lines[index])) break;
+    if (picked.length >= 8) break;
+    picked.push(lines[index]);
+  }
+  return picked.join('; ');
+}
+
+function extractEmail(text: string) {
+  return text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? '';
+}
+
+function extractPhone(text: string) {
+  const phones = [...text.matchAll(/(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/g)]
+    .map(match => match[0].trim());
+  return phones[0] ?? '';
+}
+
+function extractLinkedIn(text: string) {
+  return text.match(/https?:\/\/(?:www\.)?linkedin\.com\/[^\s)]+/i)?.[0]
+    ?? text.match(/(?:www\.)?linkedin\.com\/[^\s)]+/i)?.[0]
+    ?? '';
+}
+
+function extractName(text: string, fallback: string) {
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  const candidateLine = lines.slice(0, 12).find(line => {
+    if (line.length < 3 || line.length > 60) return false;
+    if (/@|www\.|http|resume|curriculum|vitae|phone|email|linkedin/i.test(line)) return false;
+    if (lineLooksLikeHeading(line)) return false;
+    const words = line.split(/\s+/).filter(Boolean);
+    return words.length >= 2 && words.length <= 5 && words.every(word => /^[A-Za-z.'-]+$/.test(word));
+  });
+  return candidateLine || fallback;
+}
+
+function extractTitle(text: string) {
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  return lines.slice(0, 25).find(line =>
+    line.length <= 80 && roleKeywords.some(keyword => new RegExp(`\\b${keyword}\\b`, 'i').test(line))
+  ) ?? '';
+}
+
+function extractLocation(text: string) {
+  return text.match(/(?:Location|Address)\s*[:|-]\s*([^\n]+)/i)?.[1]?.trim() ?? '';
+}
+
+function extractExperience(text: string) {
+  const years = [...text.matchAll(/(\d{1,2})\+?\s*(?:years|yrs)\b/gi)]
+    .map(match => Number(match[1]))
+    .filter(Number.isFinite);
+  return years.length ? Math.max(...years) : undefined;
+}
+
+function extractSkills(text: string) {
+  const lower = text.toLowerCase();
+  const skillSection = extractSection(text, [/^technical skills\b/i, /^skills\b/i, /^core competencies\b/i]);
+  const sectionSkills = skillSection.split(/[,|•;/]/).map(skill => skill.trim()).filter(skill => skill.length > 1 && skill.length < 40);
+  const dictionarySkills = knownSkills.filter(skill => lower.includes(skill.toLowerCase()));
+  return Array.from(new Set([...sectionSkills, ...dictionarySkills])).slice(0, 24);
+}
+
+function extractEducation(text: string) {
+  const educationSection = extractSection(text, [/^education\b/i, /^academic/i]);
+  const degreeLines = text.split('\n').map(line => line.trim()).filter(line =>
+    /\b(Bachelor|Master|MBA|B\.?S\.?|M\.?S\.?|B\.?Tech|M\.?Tech|Ph\.?D|University|College|Degree|Diploma)\b/i.test(line)
+  );
+  return compactText([educationSection, ...degreeLines.slice(0, 4)].filter(Boolean).join('; '));
+}
+
+function extractCertifications(text: string) {
+  const certSection = extractSection(text, [/^certifications?\b/i, /^licenses?\b/i]);
+  const certLines = text.split('\n').map(line => line.trim()).filter(line =>
+    /\b(Certified|Certification|AWS|Azure|Scrum|PMP|ITIL|Salesforce|Oracle|Microsoft Certified)\b/i.test(line)
+  );
+  return compactText([certSection, ...certLines.slice(0, 5)].filter(Boolean).join('; '));
+}
+
+function extractAuthorization(text: string) {
+  return text.match(/\b(US Citizen|Green Card|GC|H-?1B|H4 EAD|L2 EAD|OPT|CPT|TN Visa|EAD|Work Authorization)[^\n]*/i)?.[0] ?? '';
+}
+
+function parseResumeText(text: string, fileName: string): PreviewCandidate {
+  const cleaned = compactText(text);
+  const fallbackName = nameFromFile(fileName);
+  const email = extractEmail(cleaned);
+  const phone = extractPhone(cleaned);
+  const skills = extractSkills(cleaned);
+  const education = extractEducation(cleaned);
+  const certifications = extractCertifications(cleaned);
+  const workAuthorization = extractAuthorization(cleaned);
+  const experience = extractExperience(cleaned);
+  const title = extractTitle(cleaned);
+  const location = extractLocation(cleaned);
+  const name = extractName(cleaned, fallbackName);
+  const summaryLines = [
+    title && `Role: ${title}`,
+    typeof experience === 'number' && `Experience: ${experience} years`,
+    skills.length && `Skills: ${skills.join(', ')}`,
+    education && `Education: ${education}`,
+    certifications && `Certifications: ${certifications}`,
+    workAuthorization && `Work authorization: ${workAuthorization}`,
+  ].filter(Boolean);
+
+  return {
+    name,
+    email,
+    phone,
+    linkedin: extractLinkedIn(cleaned),
+    title,
+    location,
+    skills,
+    experience,
+    education,
+    certifications,
+    workAuthorization,
+    visaStatus: workAuthorization,
+    parsedResumeDetails: summaryLines.join('\n'),
+    summary: summaryLines.join('. '),
+    notes: [`Resume parser extracted ${summaryLines.length} profile fields from ${fileName}.`],
+    resumeFile: fileName,
+    warning: makeWarning({ name, email, phone }) || (!cleaned ? 'Resume text could not be read; import will keep blanks for missing fields.' : ''),
+  };
 }
 
 function makeWarning(row: PreviewCandidate) {
@@ -188,22 +394,19 @@ export default function BulkImport() {
     setSelectedCountries(current => current.includes(country) ? current.filter(item => item !== country) : [...current, country]);
   }
 
-  function parseResumeFiles(files: File[]) {
+  async function parseResumeFiles(files: File[]) {
     const limited = files.slice(0, 50);
     setResumeFiles(limited);
-    const rows = limited.map(file => ({
-      name: nameFromFile(file.name),
-      email: '',
-      phone: '',
-      linkedin: '',
-      title: 'Resume Uploaded Candidate',
-      location: 'Location pending',
-      skills: ['Resume parsing pending'],
-      resumeFile: file.name,
-      warning: 'Email and phone pending parser review',
+    setNotice(`Reading ${limited.length} resume file${limited.length === 1 ? '' : 's'} and extracting candidate details...`);
+    const rows = await Promise.all(limited.map(async file => {
+      const text = await readResumeText(file);
+      return parseResumeText(text, file.name);
     }));
     setResumeRows(rows);
-    setNotice(`${rows.length} resume files staged. Click Parse & Import Resume Batch to save candidates to ATS.`);
+    const extractedEmails = rows.filter(row => row.email).length;
+    const extractedPhones = rows.filter(row => row.phone).length;
+    const extractedSkills = rows.filter(row => row.skills?.length).length;
+    setNotice(`${rows.length} resume files parsed. Extracted ${extractedEmails} emails, ${extractedPhones} phones, and skills from ${extractedSkills} resumes. Review preview, then click Parse & Import Resume Batch.`);
   }
 
   async function parseExcelFile(file: File) {
@@ -318,8 +521,8 @@ export default function BulkImport() {
               <label className="block rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-8 text-center cursor-pointer hover:bg-white/[0.05]">
                 <FileUp size={30} className="mx-auto mb-3 text-blue-300" />
                 <p className="text-sm font-semibold text-white">{resumeFiles.length ? `${resumeFiles.length} resume files selected` : 'Choose resume files from computer'}</p>
-                <p className="mt-1 text-xs text-slate-500">PDF, DOC, DOCX, TXT, or ZIP batch. Max 50 resumes.</p>
-                <input type="file" multiple accept=".pdf,.doc,.docx,.txt,.rtf,.zip" className="hidden" onChange={event => parseResumeFiles(Array.from(event.target.files ?? []))} />
+                <p className="mt-1 text-xs text-slate-500">Text-based PDF, TXT, RTF, DOC, DOCX, or ZIP batch. Max 50 resumes. Scanned PDFs may need manual review.</p>
+                <input type="file" multiple accept=".pdf,.doc,.docx,.txt,.rtf,.zip" className="hidden" onChange={event => { void parseResumeFiles(Array.from(event.target.files ?? [])); }} />
               </label>
               <button onClick={importResumeBatch} className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500"><Play size={15} />Parse & Import Resume Batch</button>
             </div>
@@ -391,10 +594,10 @@ function Panel({ title, icon, children }: { title: string; icon: React.ReactNode
 
 function CandidatePreview({ rows, empty, compact = false, showRoleAndSkills = false }: { rows: PreviewCandidate[]; empty: string; compact?: boolean; showRoleAndSkills?: boolean }) {
   const gridClass = showRoleAndSkills
-    ? 'grid-cols-[minmax(140px,1fr)_minmax(160px,1fr)_130px_minmax(150px,0.9fr)_minmax(180px,1.1fr)_minmax(160px,1fr)]'
+    ? 'grid-cols-[minmax(140px,1fr)_minmax(160px,1fr)_130px_minmax(150px,0.9fr)_minmax(180px,1.1fr)_minmax(180px,1fr)_minmax(160px,1fr)]'
     : 'grid-cols-[1fr_1fr_130px_1fr]';
 
-  return <div className="overflow-x-auto rounded-lg border border-white/5 bg-[#070d18]"><div className={cn('grid min-w-[760px] gap-3 border-b border-white/5 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500', gridClass)}><span>Name</span><span>Email</span><span>Phone</span>{showRoleAndSkills && <><span>Role</span><span>Skills</span></>}<span>Warning</span></div>{rows.length ? rows.map(row => <div key={`${row.name}-${row.email}-${row.phone}`} className={cn('grid min-w-[760px] gap-3 border-b border-white/5 px-4 text-xs last:border-0', gridClass, compact ? 'py-2' : 'py-3')}><span className="font-semibold text-white">{row.name}</span><span className={row.email ? 'text-slate-400' : 'text-red-300'}>{row.email || 'Missing'}</span><span className={row.phone ? 'text-slate-400' : 'text-red-300'}>{row.phone || 'Missing'}</span>{showRoleAndSkills && <><span className="text-slate-300">{row.title || 'Role pending'}</span><span className="text-slate-400">{row.skills?.length ? row.skills.join(', ') : 'Skills pending'}</span></>}<span className={makeWarning(row) ? 'text-amber-300' : 'text-emerald-300'}>{makeWarning(row) || 'Ready'}</span></div>) : <p className="p-4 text-sm text-slate-500">{empty}</p>}</div>;
+  return <div className="overflow-x-auto rounded-lg border border-white/5 bg-[#070d18]"><div className={cn('grid min-w-[900px] gap-3 border-b border-white/5 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500', gridClass)}><span>Name</span><span>Email</span><span>Phone</span>{showRoleAndSkills && <><span>Role</span><span>Skills</span><span>Education</span></>}<span>Warning</span></div>{rows.length ? rows.map(row => <div key={`${row.name}-${row.email}-${row.phone}-${row.resumeFile}`} className={cn('grid min-w-[900px] gap-3 border-b border-white/5 px-4 text-xs last:border-0', gridClass, compact ? 'py-2' : 'py-3')}><span className="font-semibold text-white">{row.name}</span><span className={row.email ? 'text-slate-400' : 'text-red-300'}>{row.email || 'Missing'}</span><span className={row.phone ? 'text-slate-400' : 'text-red-300'}>{row.phone || 'Missing'}</span>{showRoleAndSkills && <><span className="text-slate-300">{row.title || 'Blank'}</span><span className="text-slate-400">{row.skills?.length ? row.skills.join(', ') : 'Blank'}</span><span className="text-slate-400">{row.education || 'Blank'}</span></>}<span className={makeWarning(row) ? 'text-amber-300' : 'text-emerald-300'}>{makeWarning(row) || 'Ready'}</span></div>) : <p className="p-4 text-sm text-slate-500">{empty}</p>}</div>;
 }
 
 function Field({ label, value, onChange, type = 'text' }: { label: string; value: string; onChange: (value: string) => void; type?: string }) {

@@ -28,7 +28,7 @@ const statusIcons: Record<TaskStatus, React.ReactNode> = {
   Overdue: <AlertCircle size={15} className="text-red-400" />,
 };
 
-const categories = ['All', 'Follow-up', 'Sourcing', 'Compliance', 'Business Dev', 'Admin', 'Contract', 'Prep', 'Marketing'];
+const categories = ['All', 'Interview', 'Follow-up', 'Sourcing', 'Compliance', 'Business Dev', 'Admin', 'Contract', 'Prep', 'Marketing'];
 
 export default function Tasks() {
   const [taskRows, setTaskRows] = useState<Task[]>(() => {

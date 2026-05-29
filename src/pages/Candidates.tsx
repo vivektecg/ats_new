@@ -9,8 +9,9 @@ import {
 import { getAllJobs, getAllSubmissions } from '@/lib/localRecords';
 import { ATS_RECORDS_UPDATED_EVENT, LOCAL_CANDIDATES_KEY, normalizeCandidateRecord } from '@/lib/atsLocalStore';
 import { saveRows, sendEmailRecord } from '@/lib/atsApi';
-import { currentOwnerName, getAtsOwnerNames, getSuperUserProfile, getUsers, resolveSession } from '@/lib/auth';
+import { currentOwnerName, getAtsOwnerNames, resolveSession } from '@/lib/auth';
 import { formatCallDuration, openCandidateDialer, saveCandidateCallLog, type CallOutcome } from '@/lib/callLogs';
+import { currentEmailSettings, emailSignatureText } from '@/lib/emailSettings';
 import { createCandidateJobSubmission, duplicateSubmissionMessage, findCandidateJobSubmission } from '@/lib/submissionStore';
 import type { Candidate, CandidateStatus, EmailRecord } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -1632,43 +1633,6 @@ function NotePanel({ candidate, onClose, onSubmit }: { candidate: CandidateRecor
   );
 }
 
-function currentEmailSettings() {
-  const session = resolveSession();
-  if (!session) return null;
-  if (session.role === 'SuperUser') {
-    const profile = getSuperUserProfile();
-    return {
-      name: profile.name,
-      email: profile.outlookEmail || profile.email,
-      connected: profile.outlookConnected || Boolean(profile.email),
-      provider: profile.emailProvider || 'Outlook',
-      imapHost: profile.imapHost || 'outlook.office365.com',
-      imapPort: profile.imapPort || '993',
-      smtpHost: profile.smtpHost || 'smtp.office365.com',
-      smtpPort: profile.smtpPort || '587',
-      signatureText: profile.signatureText || `Thanks,\n${profile.name}`,
-      signatureImageUrl: profile.signatureImageUrl || '',
-      signatureTitle: profile.signatureTitle || profile.title || '',
-      signaturePhone: profile.signaturePhone || profile.phone || '',
-    };
-  }
-  const user = getUsers().find(row => row.id === session.id);
-  return {
-    name: user?.name ?? session.name,
-    email: user?.outlookEmail || session.email,
-    connected: Boolean(user?.outlookConnected && (user.outlookEmail || session.email)),
-    provider: user?.emailProvider || 'Outlook',
-    imapHost: user?.imapHost || 'outlook.office365.com',
-    imapPort: user?.imapPort || '993',
-    smtpHost: user?.smtpHost || 'smtp.office365.com',
-    smtpPort: user?.smtpPort || '587',
-    signatureText: user?.signatureText || `Thanks,\n${user?.name ?? session.name}`,
-    signatureImageUrl: user?.signatureImageUrl || '',
-    signatureTitle: user?.signatureTitle || '',
-    signaturePhone: user?.signaturePhone || '',
-  };
-}
-
 function InfoTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-white/5 bg-white/[0.03] p-3">
@@ -1685,11 +1649,7 @@ function ConnectPanel({ candidate, onClose, onRecord }: { candidate: CandidateRe
   const [body, setBody] = useState('');
   const [message, setMessage] = useState('');
   const emailSettings = currentEmailSettings();
-  const signatureLines = [
-    emailSettings?.signatureText,
-    emailSettings?.signatureTitle,
-    emailSettings?.signaturePhone,
-  ].filter(Boolean).join('\n');
+  const signatureLines = emailSignatureText(emailSettings);
   const fullBody = [body.trim(), signatureLines].filter(Boolean).join('\n\n');
 
   async function sendCandidateEmail(event: FormEvent) {

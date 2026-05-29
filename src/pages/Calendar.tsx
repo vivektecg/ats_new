@@ -7,12 +7,15 @@ import {
 } from 'lucide-react';
 import { QuickActionModal, QuickIconButton } from '@/components/ats/QuickActionModal';
 import { interviews } from '@/lib/data';
-import { getAllCandidates, getAllClients, getAllJobs } from '@/lib/localRecords';
-import { LOCAL_INTERVIEWS_KEY, saveRows } from '@/lib/atsApi';
+import { currentOwnerName } from '@/lib/auth';
+import { LOCAL_INTERVIEWS_KEY, saveRows, sendEmailRecord } from '@/lib/atsApi';
+import { currentEmailSettings, emailSignatureText } from '@/lib/emailSettings';
+import { getAllCandidates, getAllClients, getAllJobs, getAllTasks } from '@/lib/localRecords';
 import { cn } from '@/lib/utils';
-import type { Interview } from '@/lib/types';
+import type { Candidate, EmailRecord, Interview, Task } from '@/lib/types';
 
 type MeetingPlatform = NonNullable<Interview['meetingPlatform']>;
+type InterviewScheduleAction = 'scheduled' | 'rescheduled' | 'reminder';
 
 interface InterviewFormState {
   candidateId: string;
@@ -91,6 +94,22 @@ function generateMeetingLink(platform: MeetingPlatform, candidateName: string) {
   if (platform === 'Video Call') return `Video call link pending - add client bridge or custom URL`;
   if (platform === 'Phone') return 'Phone screen - recruiter will call candidate';
   return 'On-site interview - location shared by client';
+}
+
+function formatInterviewMoment(interview: Interview) {
+  return `${interview.date} at ${interview.time} ${interview.timeZone ?? ''}`.trim();
+}
+
+function scheduleActionLabel(action: InterviewScheduleAction) {
+  if (action === 'rescheduled') return 'rescheduled';
+  if (action === 'reminder') return 'reminder sent for';
+  return 'scheduled';
+}
+
+function scheduleActionSubject(action: InterviewScheduleAction) {
+  if (action === 'rescheduled') return 'Updated interview invite';
+  if (action === 'reminder') return 'Interview reminder';
+  return 'Interview invite';
 }
 
 function enrichInterview(interview: Interview): Interview {
@@ -215,11 +234,92 @@ export default function Calendar() {
     setSelectedInterviewId(updatedInterview.id);
   };
 
+  const upsertInterviewTask = (interview: Interview, action: InterviewScheduleAction) => {
+    const owner = currentOwnerName();
+    const task: Task = {
+      id: `task-${interview.id}`,
+      title: `${scheduleActionSubject(action)}: ${interview.candidateName}`,
+      description: [
+        `${interview.candidateName} interview for ${interview.jobTitle} at ${interview.clientName} is ${scheduleActionLabel(action)} ${formatInterviewMoment(interview)}.`,
+        `${interview.meetingPlatform ?? interview.type}: ${interview.meetingLink ?? 'Meeting link pending'}`,
+      ].join(' '),
+      assignee: owner,
+      relatedTo: interview.candidateName,
+      relatedType: 'Candidate',
+      dueDate: interview.date,
+      priority: 'High',
+      status: 'Pending',
+      category: 'Interview',
+      createdAt: new Date().toISOString().slice(0, 10),
+    };
+
+    const existingTasks = getAllTasks();
+    const nextTasks = [
+      task,
+      ...existingTasks.filter(existingTask => existingTask.id !== task.id),
+    ];
+    saveRows('tasks', nextTasks);
+  };
+
+  const queueInterviewEmail = async (interview: Interview, action: InterviewScheduleAction) => {
+    const candidate = availableCandidates.find(item => item.id === interview.candidateId) as Candidate | undefined;
+    const emailSettings = currentEmailSettings();
+    const signature = emailSignatureText(emailSettings);
+    const deliveryReady = Boolean(candidate?.email && emailSettings?.connected && emailSettings.email);
+    const body = [
+      `Hi ${interview.candidateName},`,
+      '',
+      `Your interview for ${interview.jobTitle} with ${interview.clientName} has been ${action === 'reminder' ? 'confirmed' : action}.`,
+      `Schedule: ${formatInterviewMoment(interview)}`,
+      `Duration: ${interview.duration}`,
+      `Meeting: ${interview.meetingPlatform ?? interview.type}`,
+      `Join link: ${interview.meetingLink ?? 'Meeting link pending'}`,
+      '',
+      `Candidate availability: ${interview.candidateAvailability ?? 'Needs confirmation'}`,
+      `Client availability: ${interview.clientAvailability ?? 'Client availability pending'}`,
+      '',
+      signature,
+    ].filter(line => line !== undefined).join('\n');
+
+    const record: EmailRecord = {
+      id: `interview-email-${interview.id}-${action}-${Date.now()}`,
+      candidateId: interview.candidateId,
+      candidateName: interview.candidateName,
+      jobTitle: interview.jobTitle,
+      clientName: interview.clientName,
+      type: 'Interview confirmation',
+      to: candidate?.email || emailSettings?.email || '',
+      cc: candidate?.email ? emailSettings?.email || '' : '',
+      subject: `${scheduleActionSubject(action)}: ${interview.jobTitle} - ${formatInterviewMoment(interview)}`,
+      body,
+      status: deliveryReady ? 'Sent' : 'Draft',
+      sentAt: new Date().toLocaleString(),
+      sender: emailSettings?.email || 'ATS Calendar',
+      deliveryProvider: emailSettings?.provider || 'Not configured',
+      deliveryStatus: deliveryReady ? 'Provider Pending' : 'Failed',
+      providerMessage: deliveryReady
+        ? `${emailSettings?.provider} delivery queued from ${emailSettings?.email}. Candidate replies remain in the mailbox provider and are not imported into ATS.`
+        : 'Mailbox provider or candidate email is missing. SuperUser can configure the user mailbox in User Management.',
+    };
+
+    await sendEmailRecord(record);
+    return deliveryReady;
+  };
+
+  const syncInterviewScheduleArtifacts = async (interview: Interview, action: InterviewScheduleAction) => {
+    upsertInterviewTask(interview, action);
+    const emailQueued = await queueInterviewEmail(interview, action);
+    const emailNote = emailQueued ? 'Email invite queued through the configured mailbox.' : 'Email record saved as draft because mailbox setup is incomplete.';
+    setNotice(`${scheduleActionSubject(action)} saved for ${interview.candidateName}. Task added under Tasks. ${emailNote}`);
+  };
+
   const updateInterview = (id: string, changes: Partial<Interview>) => {
     const current = allInterviews.find(interview => interview.id === id);
-    if (!current) return;
+    if (!current) return null;
 
-    persistInterviewChange(enrichInterview({ ...current, ...changes }));
+    const updatedInterview = enrichInterview({ ...current, ...changes });
+    persistInterviewChange(updatedInterview);
+    return updatedInterview;
   };
 
   const handleSchedule = () => {
@@ -254,14 +354,14 @@ export default function Calendar() {
     });
 
     persistInterviewChange(interview);
-    setNotice(`Interview scheduled for ${candidate.name}. Reminder email queued.`);
+    void syncInterviewScheduleArtifacts(interview, 'scheduled');
     setShowScheduleModal(false);
   };
 
   const rescheduleSelectedInterview = () => {
     if (!selectedInterview) return;
 
-    updateInterview(selectedInterview.id, {
+    const updatedInterview = updateInterview(selectedInterview.id, {
       date: form.date,
       time: form.time,
       timeZone: form.timeZone,
@@ -277,7 +377,7 @@ export default function Calendar() {
       ],
       status: 'Scheduled',
     });
-    setNotice(`Interview rescheduled for ${selectedInterview.candidateName}. Reminder email queued.`);
+    if (updatedInterview) void syncInterviewScheduleArtifacts(updatedInterview, 'rescheduled');
   };
 
   const getInterviewsForDay = (day: number) => {
@@ -446,7 +546,14 @@ export default function Calendar() {
                 <div className="grid grid-cols-2 gap-2">
                   <ActionButton label="Complete" icon={<CheckCircle2 size={13} />} onClick={() => updateInterview(selectedInterview.id, { status: 'Completed' })} />
                   <ActionButton label="No-show" icon={<UserX size={13} />} onClick={() => updateInterview(selectedInterview.id, { status: 'No Show' })} />
-                  <ActionButton label="Send reminder" icon={<Mail size={13} />} onClick={() => updateInterview(selectedInterview.id, { reminderEmailSent: true })} />
+                  <ActionButton
+                    label="Send reminder"
+                    icon={<Mail size={13} />}
+                    onClick={() => {
+                      const updatedInterview = updateInterview(selectedInterview.id, { reminderEmailSent: true });
+                      if (updatedInterview) void syncInterviewScheduleArtifacts(updatedInterview, 'reminder');
+                    }}
+                  />
                   <ActionButton label="Reschedule" icon={<RefreshCw size={13} />} onClick={rescheduleSelectedInterview} />
                 </div>
 
@@ -551,7 +658,10 @@ export default function Calendar() {
           subtitle={`${calendarAction.interview.candidateName} - ${calendarAction.interview.jobTitle}`}
           onCancel={() => setCalendarAction(null)}
           onSave={() => {
-            if (calendarAction.type === 'invite') updateInterview(calendarAction.interview.id, { reminderEmailSent: true });
+            if (calendarAction.type === 'invite') {
+              const updatedInterview = updateInterview(calendarAction.interview.id, { reminderEmailSent: true });
+              if (updatedInterview) void syncInterviewScheduleArtifacts(updatedInterview, 'reminder');
+            }
             if (calendarAction.type === 'workflow') updateInterview(calendarAction.interview.id, { status: 'Completed', feedback: calendarAction.interview.feedback ?? 'Workflow completed from quick action.' });
             if (calendarAction.type === 'upcoming') setSelectedInterviewId(calendarAction.interview.id);
             setCalendarAction(null);

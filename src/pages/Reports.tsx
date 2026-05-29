@@ -9,13 +9,13 @@ import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { interviews, monthlyPlacements } from '@/lib/data';
+import { monthlyPlacements } from '@/lib/data';
 import { resolveSession } from '@/lib/auth';
-import { getAllCandidates, getAllClients, getAllJobs, getAllSubmissions } from '@/lib/localRecords';
+import { getAllCandidates, getAllClients, getAllInterviews, getAllJobs, getAllSubmissions } from '@/lib/localRecords';
 import { cn } from '@/lib/utils';
-import type { Candidate, Client, Job, Submission } from '@/lib/types';
+import type { Candidate, Client, Interview, Job, Submission } from '@/lib/types';
 
-type ExportReportType = 'candidates' | 'placed' | 'submissions' | 'jobs' | 'clients' | 'all';
+type ExportReportType = 'candidates' | 'placed' | 'submissions' | 'interviews' | 'jobs' | 'clients' | 'all';
 
 const chartColors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#64748b'];
 
@@ -163,6 +163,27 @@ const clientColumns: Array<{ header: string; value: (row: Client) => unknown }> 
   { header: 'Notes', value: row => row.notes },
 ];
 
+const interviewColumns: Array<{ header: string; value: (row: Interview) => unknown }> = [
+  { header: 'Interview ID', value: row => row.id },
+  { header: 'Candidate ID', value: row => row.candidateId },
+  { header: 'Candidate Name', value: row => row.candidateName },
+  { header: 'Job Title', value: row => row.jobTitle },
+  { header: 'Client Name', value: row => row.clientName },
+  { header: 'Type', value: row => row.type },
+  { header: 'Date', value: row => row.date },
+  { header: 'Time', value: row => row.time },
+  { header: 'Time Zone', value: row => row.timeZone },
+  { header: 'Duration', value: row => row.duration },
+  { header: 'Interviewer', value: row => row.interviewer },
+  { header: 'Status', value: row => row.status },
+  { header: 'Meeting Platform', value: row => row.meetingPlatform },
+  { header: 'Meeting Link', value: row => row.meetingLink },
+  { header: 'Reminder Email Sent', value: row => row.reminderEmailSent ? 'Yes' : 'No' },
+  { header: 'Reminder Schedule', value: row => row.reminderSchedule },
+  { header: 'Reschedule Count', value: row => row.rescheduleCount ?? 0 },
+  { header: 'Feedback', value: row => row.feedback },
+];
+
 type TooltipPayloadItem = {
   name?: string;
   dataKey?: string;
@@ -197,6 +218,7 @@ export default function Reports() {
   const clients = getAllClients();
   const jobs = getAllJobs();
   const submissions = getAllSubmissions();
+  const scheduledInterviews = getAllInterviews();
   const [exportType, setExportType] = useState<ExportReportType>('candidates');
   const [exportNotice, setExportNotice] = useState('');
   const [reportAction, setReportAction] = useState<null | { title: string; metric: string; summary: string }>(null);
@@ -204,10 +226,11 @@ export default function Reports() {
     { value: 'candidates' as const, label: 'Candidate Data', rows: candidates.length },
     { value: 'placed' as const, label: 'Placed Data', rows: candidates.filter(candidate => candidate.status === 'Placed').length + submissions.filter(submission => submission.status === 'Placed').length },
     { value: 'submissions' as const, label: 'Submission Data', rows: submissions.length },
+    { value: 'interviews' as const, label: 'Interview Schedule Data', rows: scheduledInterviews.length },
     { value: 'jobs' as const, label: 'Job Data', rows: jobs.length },
     { value: 'clients' as const, label: 'Client Data', rows: clients.length },
-    { value: 'all' as const, label: 'Complete ATS Data', rows: candidates.length + submissions.length + jobs.length + clients.length },
-  ], [candidates, clients, jobs, submissions]);
+    { value: 'all' as const, label: 'Complete ATS Data', rows: candidates.length + submissions.length + scheduledInterviews.length + jobs.length + clients.length },
+  ], [candidates, clients, jobs, scheduledInterviews, submissions]);
   const jobsByStatus = toChartRows(groupCount(jobs.map(job => job.status)), 'jobs');
   const candidatesByStatus = toChartRows(groupCount(candidates.map(candidate => candidate.status)), 'candidates');
   const submissionsByRecruiter = Object.values(submissions.reduce<Record<string, { name: string; submissions: number; placements: number; rejections: number }>>((rows, submission) => {
@@ -217,7 +240,22 @@ export default function Reports() {
     if (submission.status === 'Rejected') rows[submission.recruiter].rejections += 1;
     return rows;
   }, {}));
-  const interviewsByClient = toChartRows(groupCount(interviews.map(interview => interview.clientName)), 'interviews');
+  const candidateById = new Map(candidates.map(candidate => [candidate.id, candidate]));
+  const interviewsByClient = toChartRows(groupCount(scheduledInterviews.map(interview => interview.clientName)), 'interviews');
+  const interviewScheduleRows = scheduledInterviews
+    .map(interview => ({
+      ...interview,
+      recruiterUser: candidateById.get(interview.candidateId)?.recruiter || interview.interviewer || 'Unassigned',
+      scheduleDate: `${interview.date} ${interview.time} ${interview.timeZone ?? ''}`.trim(),
+    }))
+    .sort((left, right) => `${left.date} ${left.time}`.localeCompare(`${right.date} ${right.time}`));
+  const recruiterInterviewSchedules = Object.values(interviewScheduleRows.reduce<Record<string, { name: string; scheduled: number; completed: number; noShows: number }>>((rows, interview) => {
+    rows[interview.recruiterUser] ??= { name: interview.recruiterUser, scheduled: 0, completed: 0, noShows: 0 };
+    if (interview.status === 'Completed') rows[interview.recruiterUser].completed += 1;
+    else if (interview.status === 'No Show') rows[interview.recruiterUser].noShows += 1;
+    else rows[interview.recruiterUser].scheduled += 1;
+    return rows;
+  }, {}));
   const placementRows = submissions.filter(submission => submission.status === 'Placed' || submission.status === 'Offer Extended');
   const rejectionRows = submissions.filter(submission => submission.status === 'Rejected');
   const timeToSubmit = submissions.map(submission => {
@@ -357,6 +395,9 @@ export default function Reports() {
     if (exportType === 'submissions') {
       return { fileName: 'eventus-submission-data.csv', csv: toCsv(submissions, submissionColumns), rows: submissions.length };
     }
+    if (exportType === 'interviews') {
+      return { fileName: 'eventus-interview-schedules.csv', csv: toCsv(scheduledInterviews, interviewColumns), rows: scheduledInterviews.length };
+    }
     if (exportType === 'jobs') {
       return { fileName: 'eventus-job-data.csv', csv: toCsv(jobs, jobColumns), rows: jobs.length };
     }
@@ -367,6 +408,7 @@ export default function Reports() {
     const combinedRows = [
       ...candidates.map(row => ({ recordType: 'Candidate', recordId: row.id, primaryName: row.name, status: row.status, owner: row.recruiter, relatedName: row.title, date: row.updatedAt, details: row.summary })),
       ...submissions.map(row => ({ recordType: 'Submission', recordId: row.id, primaryName: row.candidateName, status: row.status, owner: row.recruiter, relatedName: `${row.jobTitle} / ${row.clientName}`, date: row.updatedAt ?? row.submittedAt ?? row.submittedDate, details: row.notes })),
+      ...interviewScheduleRows.map(row => ({ recordType: 'Interview', recordId: row.id, primaryName: row.candidateName, status: row.status, owner: row.recruiterUser, relatedName: `${row.jobTitle} / ${row.clientName}`, date: row.scheduleDate, details: `${row.meetingPlatform ?? row.type}: ${row.meetingLink ?? 'Meeting link pending'}` })),
       ...jobs.map(row => ({ recordType: 'Job', recordId: row.id, primaryName: row.title, status: row.status, owner: row.recruiter, relatedName: row.client, date: row.postedDate, details: row.description })),
       ...clients.map(row => ({ recordType: 'Client', recordId: row.id, primaryName: row.name, status: row.status, owner: row.recruiter, relatedName: row.contact, date: row.createdAt, details: row.notes })),
     ];
@@ -404,22 +446,22 @@ export default function Reports() {
           <p className="mt-1 text-sm text-slate-500">Visibility into funnel health, drop-offs, recruiter output, client performance, revenue, margin, and AI match quality.</p>
         </div>
         {isSuperUser && (
-          <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-[#0d1729] p-3 sm:flex-row sm:items-center">
-            <label className="flex items-center gap-2 text-xs text-slate-400">
-              <ShieldCheck size={14} className="text-emerald-300" />
-              SuperUser CSV Export
+          <div className="flex w-full flex-col gap-2 rounded-lg border border-white/10 bg-[#0d1729] p-2 sm:w-auto sm:flex-row sm:items-center">
+            <label className="flex items-center gap-1.5 whitespace-nowrap text-[11px] text-slate-400">
+              <ShieldCheck size={13} className="text-emerald-300" />
+              CSV Export
             </label>
             <select
               value={exportType}
               onChange={event => setExportType(event.target.value as ExportReportType)}
-              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-blue-500/60"
+              className="h-8 w-full rounded-lg border border-white/10 bg-white/5 px-2.5 text-xs text-white outline-none focus:border-blue-500/60 sm:w-48"
             >
               {exportOptions.map(option => (
                 <option key={option.value} value={option.value}>{option.label} ({option.rows})</option>
               ))}
             </select>
-            <button onClick={handleExport} className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-500">
-              <Download size={14} />
+            <button onClick={handleExport} className="flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white transition-colors hover:bg-blue-500">
+              <Download size={13} />
               Pull CSV
             </button>
           </div>
@@ -482,6 +524,33 @@ export default function Reports() {
 
         <ReportCard title="Interviews by client" icon={<CalendarCheck size={15} />}>
           <SimpleBar data={interviewsByClient} dataKey="interviews" color="#06b6d4" />
+        </ReportCard>
+
+        <ReportCard title="Recruiter/User Interview Schedules" icon={<CalendarCheck size={15} />}>
+          {recruiterInterviewSchedules.length ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={recruiterInterviewSchedules} barGap={4}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                <XAxis dataKey="name" tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={26} />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend wrapperStyle={{ fontSize: '11px', color: '#64748b' }} />
+                <Bar dataKey="scheduled" fill="#3b82f6" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="completed" fill="#10b981" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="noShows" fill="#ef4444" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <DataList rows={[]} empty="No interview schedules yet." />
+          )}
+        </ReportCard>
+
+        <ReportCard title="Interview schedule report" icon={<CalendarCheck size={15} />}>
+          <DataList rows={interviewScheduleRows.slice(0, 6).map(interview => ({
+            label: interview.candidateName,
+            meta: `${interview.recruiterUser} - ${interview.jobTitle} - ${interview.meetingPlatform ?? interview.type}`,
+            value: interview.scheduleDate,
+          }))} empty="No interview schedules yet." />
         </ReportCard>
 
         <ReportCard title="Placements" icon={<Trophy size={15} />}>

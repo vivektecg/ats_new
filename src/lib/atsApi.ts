@@ -84,6 +84,17 @@ export type EmailIntegration = {
   notes?: string;
 };
 
+export type OutlookOAuthStatus = {
+  configured: boolean;
+  connected: boolean;
+  userId: string;
+  emailAddress: string;
+  connectedAt: string;
+  lastRefreshedAt: string;
+  redirectUri: string;
+  missing: string[];
+};
+
 const collectionKeys: Partial<Record<AtsCollection, string>> = {
   candidates: LOCAL_CANDIDATES_KEY,
   jobs: LOCAL_JOBS_KEY,
@@ -310,6 +321,17 @@ export async function connectEmailIntegration(input: Omit<EmailIntegration, 'id'
   }
   writeLocalRows(LOCAL_EMAIL_INTEGRATIONS_KEY, body.rows, 'emailIntegrations');
   return body.row;
+}
+
+export async function outlookOAuthStatus(userId: string) {
+  return requestJsonResult<OutlookOAuthStatus>(`/email/outlook/status?userId=${encodeURIComponent(userId)}`);
+}
+
+export async function startOutlookOAuth(input: { userId: string; loginHint?: string; returnTo?: string }) {
+  return requestJsonResult<{ ok: boolean; authorizationUrl?: string; redirectUri?: string; message?: string }>('/email/outlook/start', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 export async function runGithubBackup() {

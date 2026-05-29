@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { mkdir, appendFile, readFile, writeFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAtsStore } from './ats-store.mjs';
@@ -42,6 +42,8 @@ const AUDIT_LOG = join(AUDIT_DIR, 'ai-audit.jsonl');
 const DATA_DIR = join(__dirname, 'data');
 const ATS_DB = join(DATA_DIR, 'ats-db.json');
 const GITHUB_BACKUP_FILE = join(DATA_DIR, 'github-backup.json');
+const OUTLOOK_OAUTH_STATES_FILE = join(DATA_DIR, 'outlook-oauth-states.json');
+const OUTLOOK_OAUTH_TOKENS_FILE = join(DATA_DIR, 'outlook-oauth-tokens.json');
 const DIST_DIR = join(__dirname, '..', 'dist');
 const ATS_COLLECTIONS = new Set([
   'candidates',
@@ -127,6 +129,29 @@ function pathnameFromUrl(url = '/') {
   return new URL(url, 'http://localhost').pathname;
 }
 
+function apiBaseUrl(request) {
+  const forwardedProto = request.headers['x-forwarded-proto'];
+  const forwardedHost = request.headers['x-forwarded-host'];
+  const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
+  if (proto && host) return `${proto}://${host}`;
+  return process.env.PUBLIC_API_ORIGIN || `http://localhost:${PORT}`;
+}
+
+function appOrigin(request) {
+  const origin = request.headers.origin;
+  if (typeof origin === 'string' && origin) return origin;
+  return process.env.FRONTEND_ORIGIN || process.env.AI_CORS_ORIGIN || 'http://127.0.0.1:5173';
+}
+
+function html(response, status, body) {
+  response.writeHead(status, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  response.end(body);
+}
+
 function contentType(pathname) {
   switch (extname(pathname)) {
     case '.html':
@@ -190,6 +215,89 @@ async function readAtsDb() {
 async function writeAtsDb(db) {
   await atsStore.writeDb(db);
   scheduleGithubBackup('ats-data-change');
+}
+
+async function readJsonFile(filePath, fallback) {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.warn(`Could not read ${filePath}:`, error instanceof Error ? error.message : error);
+    return fallback;
+  }
+}
+
+async function writeJsonFile(filePath, payload) {
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function outlookConfig(request) {
+  return {
+    clientId: process.env.OUTLOOK_CLIENT_ID || process.env.MICROSOFT_CLIENT_ID || '',
+    clientSecret: process.env.OUTLOOK_CLIENT_SECRET || process.env.MICROSOFT_CLIENT_SECRET || '',
+    tenantId: process.env.OUTLOOK_TENANT_ID || process.env.MICROSOFT_TENANT_ID || 'common',
+    redirectUri: process.env.OUTLOOK_REDIRECT_URI || `${apiBaseUrl(request)}/api/ats/email/outlook/callback`,
+    scopes: (process.env.OUTLOOK_SCOPES || 'offline_access User.Read Mail.Send').trim(),
+  };
+}
+
+function outlookConfigReady(config) {
+  return Boolean(config.clientId && config.clientSecret && config.redirectUri);
+}
+
+function tokenSecret() {
+  const configured = process.env.OUTLOOK_TOKEN_ENCRYPTION_KEY || process.env.ATS_TOKEN_ENCRYPTION_KEY || process.env.ATS_SECRET_KEY;
+  if (configured) return configured;
+  if (process.env.NODE_ENV === 'production') return '';
+  return `eventus-local-dev-token-key:${PROJECT_DIR}`;
+}
+
+function encryptSecret(value) {
+  const secret = tokenSecret();
+  if (!secret) throw new Error('OUTLOOK_TOKEN_ENCRYPTION_KEY is required before saving Outlook OAuth tokens.');
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+  return {
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    value: encrypted.toString('base64'),
+  };
+}
+
+function decryptSecret(payload) {
+  const secret = tokenSecret();
+  if (!secret) throw new Error('OUTLOOK_TOKEN_ENCRYPTION_KEY is required before reading Outlook OAuth tokens.');
+  const decipher = createDecipheriv(
+    'aes-256-gcm',
+    createHash('sha256').update(secret).digest(),
+    Buffer.from(payload.iv, 'base64'),
+  );
+  decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(payload.value, 'base64')),
+    decipher.final(),
+  ]);
+  return JSON.parse(decrypted.toString('utf8'));
+}
+
+async function readOutlookStates() {
+  const state = await readJsonFile(OUTLOOK_OAUTH_STATES_FILE, { rows: [] });
+  return Array.isArray(state.rows) ? state.rows : [];
+}
+
+async function writeOutlookStates(rows) {
+  await writeJsonFile(OUTLOOK_OAUTH_STATES_FILE, { rows });
+}
+
+async function readOutlookTokens() {
+  const state = await readJsonFile(OUTLOOK_OAUTH_TOKENS_FILE, { rows: [] });
+  return Array.isArray(state.rows) ? state.rows : [];
+}
+
+async function writeOutlookTokens(rows) {
+  await writeJsonFile(OUTLOOK_OAUTH_TOKENS_FILE, { rows });
 }
 
 function normalizeAuthRows(rows) {
@@ -475,6 +583,312 @@ async function handleSubmissionSubmit(request, response) {
   return json(response, 200, { row: result.row, rows: result.rows });
 }
 
+async function handleOutlookStatus(request, response) {
+  const url = new URL(request.url, 'http://localhost');
+  const userId = url.searchParams.get('userId') || actorFromRequest(request)?.id || '';
+  const rows = await readOutlookTokens();
+  const token = rows.find(row => row.userId === userId);
+  const config = outlookConfig(request);
+  return json(response, 200, {
+    configured: outlookConfigReady(config),
+    connected: Boolean(token),
+    userId,
+    emailAddress: token?.emailAddress || '',
+    connectedAt: token?.connectedAt || '',
+    lastRefreshedAt: token?.lastRefreshedAt || '',
+    redirectUri: config.redirectUri,
+    missing: [
+      !config.clientId ? 'OUTLOOK_CLIENT_ID' : '',
+      !config.clientSecret ? 'OUTLOOK_CLIENT_SECRET' : '',
+      !config.redirectUri ? 'OUTLOOK_REDIRECT_URI' : '',
+      !tokenSecret() ? 'OUTLOOK_TOKEN_ENCRYPTION_KEY' : '',
+    ].filter(Boolean),
+  });
+}
+
+async function handleOutlookStart(request, response) {
+  const actor = actorFromRequest(request);
+  if (!actor || actor.role !== 'SuperUser') return json(response, 403, { ok: false, message: 'Only SuperUser can connect Outlook mailboxes.' });
+  const body = request.method === 'POST' ? JSON.parse(await readBody(request) || '{}') : {};
+
+  const config = outlookConfig(request);
+  if (!outlookConfigReady(config)) {
+    return json(response, 400, {
+      ok: false,
+      message: 'Outlook OAuth is not configured. Add OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, and OUTLOOK_REDIRECT_URI to the backend environment.',
+      redirectUri: config.redirectUri,
+    });
+  }
+  if (!tokenSecret()) {
+    return json(response, 400, {
+      ok: false,
+      message: 'OUTLOOK_TOKEN_ENCRYPTION_KEY is required before connecting Outlook in production.',
+    });
+  }
+
+  const url = new URL(request.url, 'http://localhost');
+  const userId = body.userId || url.searchParams.get('userId') || actor.id;
+  const stateRows = await readOutlookStates();
+  const state = randomBytes(24).toString('hex');
+  const authUrl = new URL(`https://login.microsoftonline.com/${encodeURIComponent(config.tenantId)}/oauth2/v2.0/authorize`);
+  authUrl.searchParams.set('client_id', config.clientId);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('redirect_uri', config.redirectUri);
+  authUrl.searchParams.set('response_mode', 'query');
+  authUrl.searchParams.set('scope', config.scopes);
+  authUrl.searchParams.set('state', state);
+  const loginHint = body.loginHint || url.searchParams.get('loginHint') || '';
+  if (loginHint) authUrl.searchParams.set('login_hint', loginHint);
+
+  await writeOutlookStates([
+    {
+      state,
+      userId,
+      requestedBy: actor,
+      loginHint,
+      returnTo: body.returnTo || url.searchParams.get('returnTo') || `${appOrigin(request)}/users`,
+      createdAt: new Date().toISOString(),
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    },
+    ...stateRows.filter(row => Number(row.expiresAt || 0) > Date.now()).slice(0, 20),
+  ]);
+
+  if (request.method === 'POST') {
+    return json(response, 200, { ok: true, authorizationUrl: authUrl.toString(), redirectUri: config.redirectUri });
+  }
+
+  response.writeHead(302, { Location: authUrl.toString() });
+  response.end();
+}
+
+async function handleOutlookCallback(request, response) {
+  const url = new URL(request.url, 'http://localhost');
+  const state = url.searchParams.get('state') || '';
+  const code = url.searchParams.get('code') || '';
+  const error = url.searchParams.get('error_description') || url.searchParams.get('error') || '';
+  const states = await readOutlookStates();
+  const savedState = states.find(row => row.state === state);
+  await writeOutlookStates(states.filter(row => row.state !== state && Number(row.expiresAt || 0) > Date.now()));
+
+  const finish = (title, message, ok = false, returnTo = `${appOrigin(request)}/users`) => html(response, ok ? 200 : 400, `<!doctype html>
+<html><head><meta charset="utf-8"><title>${title}</title></head>
+<body style="font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; background:#0f172a; color:#e2e8f0; display:grid; min-height:100vh; place-items:center; margin:0;">
+  <main style="max-width:520px; padding:28px; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:#111827;">
+    <h1 style="margin:0 0 12px; font-size:22px;">${title}</h1>
+    <p style="line-height:1.55; color:#cbd5e1;">${message}</p>
+    <a href="${returnTo}" style="display:inline-block; margin-top:16px; color:white; background:#2563eb; padding:10px 14px; border-radius:8px; text-decoration:none;">Back to ATS</a>
+  </main>
+</body></html>`);
+
+  if (error) return finish('Outlook connection failed', error);
+  if (!savedState || Number(savedState.expiresAt || 0) < Date.now()) return finish('Outlook connection expired', 'Please start the Outlook connection again from ATS User Management.');
+  if (!code) return finish('Outlook connection failed', 'Microsoft did not return an authorization code.', false, savedState.returnTo);
+
+  try {
+    const tokenSet = await exchangeOutlookCode(request, code);
+    const profile = await fetchMicrosoftProfile(tokenSet.access_token);
+    const emailAddress = String(profile.mail || profile.userPrincipalName || savedState.loginHint || '').toLowerCase();
+    if (!emailAddress) throw new Error('Microsoft account email was not returned.');
+    const userName = profile.displayName || await resolveBackendUserName(savedState.userId, savedState.requestedBy?.name || 'ATS User');
+    await saveOutlookToken({ userId: savedState.userId, userName, emailAddress, tokenSet });
+    await upsertOutlookIntegration({ userId: savedState.userId, userName, emailAddress });
+    await markAuthMailboxConnected({ userId: savedState.userId, emailAddress });
+    return finish('Outlook connected', `${emailAddress} is connected. ATS can now send candidate emails through Microsoft Graph from this mailbox.`, true, savedState.returnTo);
+  } catch (callbackError) {
+    return finish('Outlook connection failed', callbackError instanceof Error ? callbackError.message : 'Could not complete Microsoft OAuth.', false, savedState.returnTo);
+  }
+}
+
+function splitEmails(value) {
+  return String(value || '')
+    .split(/[;,]/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function graphRecipients(value) {
+  return splitEmails(value).map(address => ({
+    emailAddress: { address },
+  }));
+}
+
+function cleanHtmlMessage(message) {
+  return String(message || '').replace(/[<>&]/g, character => ({
+    '<': '&lt;',
+    '>': '&gt;',
+    '&': '&amp;',
+  })[character]);
+}
+
+async function upsertOutlookIntegration({ userId, userName, emailAddress, connectedAt = new Date().toISOString() }) {
+  const db = await readAtsDb();
+  const current = Array.isArray(db.emailIntegrations) ? db.emailIntegrations : [];
+  const existing = current.find(item => item.userId === userId || item.emailAddress?.toLowerCase() === emailAddress.toLowerCase());
+  const row = {
+    id: existing?.id || `email-integration-${userId || 'user'}-${Date.now()}`,
+    userId: userId || existing?.userId || 'unknown-user',
+    userName: userName || existing?.userName || await resolveBackendUserName(userId, 'ATS User'),
+    provider: 'Outlook',
+    emailAddress,
+    imapHost: existing?.imapHost || 'outlook.office365.com',
+    imapPort: Number(existing?.imapPort) || 993,
+    smtpHost: existing?.smtpHost || 'smtp.office365.com',
+    smtpPort: Number(existing?.smtpPort) || 587,
+    status: 'connected',
+    connectedAt: existing?.connectedAt || connectedAt,
+    lastSyncedAt: new Date().toISOString(),
+    notes: 'Connected by Microsoft Graph OAuth. Tokens are stored in server/data/outlook-oauth-tokens.json and are not included in ATS GitHub backup.',
+  };
+  db.emailIntegrations = [row, ...current.filter(item => item.id !== row.id && item.userId !== row.userId)];
+  await writeAtsDb(db);
+  return row;
+}
+
+async function markAuthMailboxConnected({ userId, emailAddress }) {
+  const state = await ensureAuthState();
+  if (userId === 'SuperUser') {
+    await authStore.replaceCollection('authMetadata', [{
+      ...state.superUser,
+      outlookEmail: emailAddress,
+      outlookConnected: true,
+      emailProvider: 'Outlook',
+      updatedAt: new Date().toISOString(),
+    }]);
+    return;
+  }
+
+  await authStore.replaceCollection('authUsers', state.users.map(user => user.id === userId ? {
+    ...user,
+    outlookEmail: emailAddress,
+    outlookConnected: true,
+    emailProvider: 'Outlook',
+    updatedAt: new Date().toISOString(),
+  } : user));
+}
+
+async function fetchMicrosoftProfile(accessToken) {
+  const response = await fetch('https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `Microsoft profile lookup failed with ${response.status}`);
+  return body;
+}
+
+async function saveOutlookToken({ userId, userName, emailAddress, tokenSet }) {
+  const rows = await readOutlookTokens();
+  const now = new Date().toISOString();
+  const tokenPayload = {
+    accessToken: tokenSet.access_token,
+    refreshToken: tokenSet.refresh_token,
+    scope: tokenSet.scope,
+    tokenType: tokenSet.token_type,
+    expiresAt: Date.now() + (Number(tokenSet.expires_in) || 3600) * 1000,
+  };
+  const row = {
+    id: `outlook-token-${userId || emailAddress}`,
+    userId,
+    userName,
+    emailAddress: emailAddress.toLowerCase(),
+    provider: 'Outlook',
+    connectedAt: rows.find(item => item.userId === userId)?.connectedAt || now,
+    lastRefreshedAt: now,
+    encryptedToken: encryptSecret(tokenPayload),
+  };
+  await writeOutlookTokens([row, ...rows.filter(item => item.id !== row.id && item.userId !== userId && item.emailAddress !== row.emailAddress)]);
+  return row;
+}
+
+async function exchangeOutlookCode(request, code) {
+  const config = outlookConfig(request);
+  const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(config.tenantId)}/oauth2/v2.0/token`;
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: config.redirectUri,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error_description || body?.error || `Microsoft token exchange failed with ${response.status}`);
+  return body;
+}
+
+async function refreshOutlookToken(request, tokenRow, tokenPayload) {
+  const config = outlookConfig(request);
+  const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(config.tenantId)}/oauth2/v2.0/token`;
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      refresh_token: tokenPayload.refreshToken,
+      grant_type: 'refresh_token',
+      scope: config.scopes,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error_description || body?.error || `Microsoft refresh token failed with ${response.status}`);
+  const merged = {
+    accessToken: body.access_token,
+    refreshToken: body.refresh_token || tokenPayload.refreshToken,
+    scope: body.scope || tokenPayload.scope,
+    tokenType: body.token_type || tokenPayload.tokenType,
+    expiresAt: Date.now() + (Number(body.expires_in) || 3600) * 1000,
+  };
+  const rows = await readOutlookTokens();
+  await writeOutlookTokens(rows.map(row => row.id === tokenRow.id ? {
+    ...row,
+    lastRefreshedAt: new Date().toISOString(),
+    encryptedToken: encryptSecret(merged),
+  } : row));
+  return merged.accessToken;
+}
+
+async function accessTokenForOutlookSend(request, { actor, sender }) {
+  const rows = await readOutlookTokens();
+  const senderEmail = String(sender || '').toLowerCase();
+  const tokenRow = rows.find(row => row.userId === actor?.id)
+    || rows.find(row => senderEmail && row.emailAddress === senderEmail)
+    || rows.find(row => row.userId === 'SuperUser');
+  if (!tokenRow) throw new Error('No Outlook OAuth mailbox is connected for this ATS user.');
+  const tokenPayload = decryptSecret(tokenRow.encryptedToken);
+  if (tokenPayload.accessToken && Number(tokenPayload.expiresAt || 0) > Date.now() + 60_000) return tokenPayload.accessToken;
+  return refreshOutlookToken(request, tokenRow, tokenPayload);
+}
+
+async function sendOutlookGraphMail(request, emailRecord, actor) {
+  const accessToken = await accessTokenForOutlookSend(request, { actor, sender: emailRecord.sender });
+  const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message: {
+        subject: emailRecord.subject || 'ATS message',
+        body: {
+          contentType: 'Text',
+          content: cleanHtmlMessage(emailRecord.body || ''),
+        },
+        toRecipients: graphRecipients(emailRecord.to),
+        ccRecipients: graphRecipients(emailRecord.cc),
+      },
+      saveToSentItems: true,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body?.error?.message || `Microsoft Graph sendMail failed with ${response.status}`);
+  }
+}
+
 async function handleEmailConnect(request, response) {
   const body = JSON.parse(await readBody(request) || '{}');
   const db = await readAtsDb();
@@ -506,13 +920,28 @@ async function handleEmailSend(request, response) {
   const db = await readAtsDb();
   const current = Array.isArray(db.emailRecords) ? db.emailRecords : [];
   const now = new Date().toISOString();
+  let deliveryStatus = body.deliveryStatus || 'Provider Pending';
+  let providerMessage = body.providerMessage || 'ATS stored the outbound email request.';
+  const deliveryProvider = body.deliveryProvider || body.provider || 'Configured mailbox';
+
+  if (String(deliveryProvider).toLowerCase().includes('outlook') || String(body.provider || '').toLowerCase().includes('outlook')) {
+    try {
+      await sendOutlookGraphMail(request, body, actor);
+      deliveryStatus = 'Sent';
+      providerMessage = 'Email sent through Microsoft Graph Outlook sendMail. Replies remain in the Outlook mailbox.';
+    } catch (error) {
+      deliveryStatus = 'Failed';
+      providerMessage = error instanceof Error ? error.message : 'Microsoft Graph Outlook delivery failed.';
+    }
+  }
+
   const row = withUpdatedTimestamp({
     ...body,
     id: body.id || `email-api-${Date.now()}`,
-    status: 'Sent',
-    deliveryStatus: body.deliveryStatus || 'Provider Pending',
-    deliveryProvider: body.deliveryProvider || body.provider || 'Configured mailbox',
-    providerMessage: body.providerMessage || 'ATS stored the outbound email request. Configure a server-side SMTP/Graph/Gmail sender to deliver through the selected mailbox provider.',
+    status: deliveryStatus === 'Failed' ? 'Draft' : 'Sent',
+    deliveryStatus,
+    deliveryProvider,
+    providerMessage,
     sentAt: body.sentAt || new Intl.DateTimeFormat('en-US', {
       month: 'short',
       day: 'numeric',
@@ -979,6 +1408,9 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'GET' && pathname === '/api/ai/audit') return handleAudit(request, response);
   if (pathname === '/api/ats/submissions/submit' && request.method === 'POST') return handleSubmissionSubmit(request, response);
   if (pathname === '/api/ats/email/connect' && request.method === 'POST') return handleEmailConnect(request, response);
+  if (pathname === '/api/ats/email/outlook/status' && request.method === 'GET') return handleOutlookStatus(request, response);
+  if (pathname === '/api/ats/email/outlook/start' && (request.method === 'GET' || request.method === 'POST')) return handleOutlookStart(request, response);
+  if (pathname === '/api/ats/email/outlook/callback' && request.method === 'GET') return handleOutlookCallback(request, response);
   if (pathname === '/api/ats/email/send' && request.method === 'POST') return handleEmailSend(request, response);
   if (pathname === '/api/ats/email/sync' && (request.method === 'POST' || request.method === 'GET')) return handleEmailSync(request, response);
   if (collectionFromUrl(request.url)) return handleAtsCollection(request, response);

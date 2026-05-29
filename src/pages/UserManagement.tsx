@@ -25,7 +25,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { QuickActionModal, QuickIconButton } from '@/components/ats/QuickActionModal';
-import { connectEmailIntegration, runGithubBackup } from '@/lib/atsApi';
+import { connectEmailIntegration, outlookOAuthStatus, runGithubBackup, startOutlookOAuth } from '@/lib/atsApi';
 import {
   allSections,
   AppUser,
@@ -186,6 +186,13 @@ export default function UserManagement() {
   const activeUsers = users.filter(user => user.active).length;
   const sensitiveSections = allSections.filter(section => section.sensitive && section.key !== 'users');
 
+  useEffect(() => {
+    void syncAuthStateNow().then(() => {
+      setUsers(getUsers());
+      setSuperProfile(loadSuperUserProfile(resolveSession()));
+    });
+  }, []);
+
   function saveSuperProfile() {
     const nextProfile = saveSuperUserProfile(superProfile);
     void syncMailboxIntegration({
@@ -289,6 +296,45 @@ export default function UserManagement() {
       destination,
       githubState,
     ].filter(Boolean).join('\n'));
+  }
+
+  async function connectOutlookMailbox(target: { id: string; email: string; outlookEmail?: string }) {
+    setMessage('');
+    setError('');
+    const loginHint = (target.outlookEmail || target.email || '').trim().toLowerCase();
+    if (!loginHint) {
+      setError('Add the mailbox email before connecting Outlook.');
+      return;
+    }
+
+    const result = await startOutlookOAuth({
+      userId: target.id,
+      loginHint,
+      returnTo: `${window.location.origin}/users`,
+    });
+    if (!result.ok || !result.data?.authorizationUrl) {
+      const setupHint = result.data?.redirectUri ? ` Redirect URI to add in Microsoft app registration: ${result.data.redirectUri}` : '';
+      setError(`${result.data?.message || 'Outlook OAuth setup is not ready.'}${setupHint}`);
+      return;
+    }
+    window.location.assign(result.data.authorizationUrl);
+  }
+
+  async function checkOutlookMailbox(target: { id: string }) {
+    setMessage('');
+    setError('');
+    const result = await outlookOAuthStatus(target.id);
+    if (!result.ok || !result.data) {
+      setError('Could not check Outlook connection. Make sure the backend is running.');
+      return;
+    }
+    if (!result.data.configured) {
+      setError(`Outlook OAuth is missing backend settings: ${result.data.missing.join(', ') || 'configuration'}. Redirect URI: ${result.data.redirectUri}`);
+      return;
+    }
+    setMessage(result.data.connected
+      ? `Outlook connected for ${result.data.emailAddress}.`
+      : `Outlook OAuth is configured, but this user has not connected a mailbox yet. Redirect URI: ${result.data.redirectUri}`);
   }
 
   useEffect(() => {
@@ -793,14 +839,20 @@ export default function UserManagement() {
                 <LabeledInput label="SMTP host" value={form.smtpHost} onChange={value => setForm(current => ({ ...current, smtpHost: value }))} />
                 <LabeledInput label="SMTP port" value={form.smtpPort} onChange={value => setForm(current => ({ ...current, smtpPort: value }))} />
               </div>
-              <button
-                type="button"
-                onClick={() => setForm(current => ({ ...current, outlookConnected: !current.outlookConnected }))}
-                className={cn('mt-3 flex w-full items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold', form.outlookConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
-              >
-                <span>Mailbox connection</span>
-                <span>{form.outlookConnected ? 'Connected' : 'Not connected'}</span>
-              </button>
+              {form.emailProvider === 'Outlook' ? (
+                <div className="mt-3 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-100">
+                  Save the user first, then use Edit User to connect Outlook through Microsoft OAuth.
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setForm(current => ({ ...current, outlookConnected: !current.outlookConnected }))}
+                  className={cn('mt-3 flex w-full items-center justify-between rounded-lg border px-3 py-2 text-xs font-semibold', form.outlookConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
+                >
+                  <span>Mailbox connection</span>
+                  <span>{form.outlookConnected ? 'Connected' : 'Not connected'}</span>
+                </button>
+              )}
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <LabeledInput label="Signature title" value={form.signatureTitle} onChange={value => setForm(current => ({ ...current, signatureTitle: value }))} />
                 <LabeledInput label="Signature phone" value={form.signaturePhone} onChange={value => setForm(current => ({ ...current, signaturePhone: value }))} />
@@ -1085,13 +1137,32 @@ export default function UserManagement() {
                         className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/60"
                       />
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedEdit(current => ({ ...current, outlookConnected: !current.outlookConnected }))}
-                      className={cn('self-end rounded-lg border px-3 py-2.5 text-xs font-semibold', selectedEdit.outlookConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
-                    >
-                      {selectedEdit.outlookConnected ? 'Mailbox connected' : 'Connect mailbox'}
-                    </button>
+                    {selectedEdit.emailProvider === 'Outlook' ? (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <button
+                          type="button"
+                          onClick={() => selectedUser && connectOutlookMailbox({ id: selectedUser.id, email: selectedEdit.email, outlookEmail: selectedEdit.outlookEmail })}
+                          className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2.5 text-xs font-semibold text-blue-100 transition-colors hover:bg-blue-500/20"
+                        >
+                          Connect Outlook
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => selectedUser && checkOutlookMailbox({ id: selectedUser.id })}
+                          className={cn('rounded-lg border px-3 py-2.5 text-xs font-semibold', selectedEdit.outlookConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
+                        >
+                          {selectedEdit.outlookConnected ? 'Check connected' : 'Check setup'}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedEdit(current => ({ ...current, outlookConnected: !current.outlookConnected }))}
+                        className={cn('self-end rounded-lg border px-3 py-2.5 text-xs font-semibold', selectedEdit.outlookConnected ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/5 text-slate-400')}
+                      >
+                        {selectedEdit.outlookConnected ? 'Mailbox connected' : 'Connect mailbox'}
+                      </button>
+                    )}
                     <label className="block">
                       <span className="mb-1.5 block text-xs font-medium text-slate-400">Signature title</span>
                       <input
