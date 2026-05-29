@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { QuickActionModal, QuickIconButton } from '@/components/ats/QuickActionModal';
 import { candidateDocuments, candidates } from '@/lib/data';
-import { LOCAL_DOCUMENTS_KEY, readLocalRows, saveRows } from '@/lib/atsApi';
+import { LOCAL_DOCUMENTS_KEY, readLocalRows, saveRows, uploadBackendFile, type AtsStoredFile } from '@/lib/atsApi';
 import { getAllCandidates, getAllSubmissions } from '@/lib/localRecords';
 import { cn } from '@/lib/utils';
 import type { Candidate, CandidateDocument, CandidateDocumentType, DocumentStatus, Submission } from '@/lib/types';
@@ -79,6 +79,8 @@ export default function Documents() {
   const [page, setPage] = useState(1);
   const [localDocuments, setLocalDocuments] = useState<CandidateDocument[]>(loadLocalDocuments);
   const [uploadForm, setUploadForm] = useState<UploadFormState>(initialUploadForm(initialCandidateId));
+  const [uploadedFile, setUploadedFile] = useState<AtsStoredFile | null>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
   const [notice, setNotice] = useState('');
   const [documentAction, setDocumentAction] = useState<null | { type: 'checklist' | 'all-docs' | 'upload'; candidate: Candidate }>(null);
 
@@ -142,7 +144,17 @@ export default function Documents() {
       type: uploadForm.type,
       status: uploadForm.status,
       fileName: uploadForm.fileName.trim() || `${candidate.name.replace(/\s+/g, '_')}_${uploadForm.type.replace(/\s+/g, '_')}.pdf`,
+      fileType: uploadedFile?.fileType,
+      fileSize: uploadedFile?.fileSize,
+      fileUploadId: uploadedFile?.id,
+      storageProvider: uploadedFile?.storageProvider,
+      storagePath: uploadedFile?.storagePath,
+      relativePath: uploadedFile?.relativePath,
+      downloadUrl: uploadedFile?.downloadUrl,
       uploadedAt: todayDate(),
+      uploadedBy: uploadedFile?.uploadedBy,
+      uploadedByUserId: uploadedFile?.uploadedByUserId,
+      uploadedByEmail: uploadedFile?.uploadedByEmail,
       verifiedBy: uploadForm.status === 'Verified' ? candidate.recruiter : undefined,
       expiryDate: uploadForm.expiryDate || undefined,
       notes: uploadForm.notes || `${uploadForm.type} uploaded from Document Management.`,
@@ -155,6 +167,7 @@ export default function Documents() {
     saveLocalDocuments(nextDocuments);
     setLocalDocuments(nextDocuments);
     setSelectedCandidateId(candidate.id);
+    setUploadedFile(null);
     setNotice(`${document.type} uploaded for ${candidate.name}.`);
     setDocumentAction(null);
   };
@@ -169,6 +182,13 @@ export default function Documents() {
       type,
       status,
       fileName: fileName ?? existing?.fileName ?? `${candidate.name.replace(/\s+/g, '_')}_${type.replace(/\s+/g, '_')}.pdf`,
+      fileType: existing?.fileType,
+      fileSize: existing?.fileSize,
+      fileUploadId: existing?.fileUploadId,
+      storageProvider: existing?.storageProvider,
+      storagePath: existing?.storagePath,
+      relativePath: existing?.relativePath,
+      downloadUrl: existing?.downloadUrl,
       uploadedAt: todayDate(),
       verifiedBy: status === 'Verified' ? candidate.recruiter : existing?.verifiedBy,
       expiryDate: existing?.expiryDate,
@@ -283,7 +303,7 @@ export default function Documents() {
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1.5">
                         <QuickIconButton title="Open checklist" onClick={() => { updateSelectedCandidate(candidate.id); setDocumentAction({ type: 'checklist', candidate }); }}><FileCheck2 size={14} /></QuickIconButton>
-                        <QuickIconButton title="Upload document" onClick={() => { updateSelectedCandidate(candidate.id); setUploadForm(initialUploadForm(candidate.id)); setDocumentAction({ type: 'upload', candidate }); }}><FileUp size={14} /></QuickIconButton>
+                        <QuickIconButton title="Upload document" onClick={() => { updateSelectedCandidate(candidate.id); setUploadForm(initialUploadForm(candidate.id)); setUploadedFile(null); setDocumentAction({ type: 'upload', candidate }); }}><FileUp size={14} /></QuickIconButton>
                         <QuickIconButton title="All documents" onClick={() => { updateSelectedCandidate(candidate.id); setDocumentAction({ type: 'all-docs', candidate }); }}><FileText size={14} /></QuickIconButton>
                         <QuickIconButton title="Open profile" onClick={() => navigate(`/candidates/${candidate.id}`)}><LinkIcon size={14} /></QuickIconButton>
                       </div>
@@ -318,18 +338,34 @@ export default function Documents() {
                 <label className="mb-1.5 block text-xs font-medium text-slate-400">Upload document file</label>
                 <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-blue-500/30 bg-blue-500/10 px-3 py-3 text-xs font-semibold text-blue-100 hover:bg-blue-500/15">
                   <FileUp size={14} />
-                  {uploadForm.fileName || 'Select file'}
+                  {uploadingFile ? 'Uploading...' : uploadForm.fileName || 'Select file'}
                   <input
                     type="file"
                     className="hidden"
-                    onChange={event => {
+                    onChange={async event => {
                       const file = event.target.files?.[0];
                       if (!file) return;
-                      updateUploadForm('fileName', file.name);
-                      event.target.value = '';
+                      const candidate = availableCandidates.find(item => item.id === uploadForm.candidateId) ?? selectedCandidate;
+                      setUploadingFile(true);
+                      try {
+                        const stored = await uploadBackendFile(file, {
+                          candidateId: candidate?.id,
+                          candidateName: candidate?.name,
+                          documentType: uploadForm.type,
+                          entityType: 'candidate-document',
+                        });
+                        setUploadedFile(stored);
+                        updateUploadForm('fileName', stored.fileName);
+                      } catch (error) {
+                        setNotice(error instanceof Error ? error.message : 'Document upload failed.');
+                      } finally {
+                        setUploadingFile(false);
+                        event.target.value = '';
+                      }
                     }}
                   />
                 </label>
+                {uploadedFile?.downloadUrl && <p className="mt-1 text-xs text-emerald-300">Stored in ATS backend file storage</p>}
               </div>
               <SelectField label="Status" value={uploadForm.status} onChange={value => updateUploadForm('status', value as DocumentStatus)} options={['Missing', 'Pending', 'Received', 'Verified', 'Expired'].map(status => ({ value: status, label: status }))} />
               <Field label="Expiry date" type="date" value={uploadForm.expiryDate} onChange={value => updateUploadForm('expiryDate', value)} />
@@ -400,6 +436,7 @@ export default function Documents() {
                     <div>
                       <p className="text-sm font-semibold text-white">{document.type}</p>
                       <p className="mt-1 text-xs text-slate-500">{document.fileName || 'No file uploaded'} - {document.uploadedAt}</p>
+                      {document.downloadUrl && <a href={document.downloadUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-blue-300 hover:text-blue-200">Download stored file</a>}
                     </div>
                     <span className={cn('rounded-full border px-2 py-0.5 text-[10px] font-medium', statusColors[document.status])}>{document.status}</span>
                   </div>

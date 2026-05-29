@@ -188,7 +188,17 @@ export interface CandidateDocument {
   type: CandidateDocumentType;
   status: DocumentStatus;
   fileName?: string;
+  fileType?: string;
+  fileSize?: number;
+  fileUploadId?: string;
+  storageProvider?: string;
+  storagePath?: string;
+  relativePath?: string;
+  downloadUrl?: string;
   uploadedAt?: string;
+  uploadedBy?: string;
+  uploadedByUserId?: string;
+  uploadedByEmail?: string;
   verifiedBy?: string;
   expiryDate?: string;
   notes?: string;

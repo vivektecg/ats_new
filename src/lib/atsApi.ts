@@ -38,7 +38,8 @@ type AtsCollection =
   | 'callLogs'
   | 'automations'
   | 'integrations'
-  | 'integrationSyncLogs';
+  | 'integrationSyncLogs'
+  | 'fileUploads';
 
 type RequestJsonResult<T> = {
   ok: boolean;
@@ -66,6 +67,26 @@ type CollectionRows = {
   automations: AtsLooseRow;
   integrations: AtsLooseRow;
   integrationSyncLogs: AtsLooseRow;
+  fileUploads: AtsStoredFile;
+};
+
+export type AtsStoredFile = {
+  id: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  candidateId?: string;
+  candidateName?: string;
+  documentType?: string;
+  entityType?: string;
+  storageProvider: string;
+  storagePath?: string;
+  relativePath?: string;
+  downloadUrl: string;
+  uploadedAt: string;
+  uploadedBy?: string;
+  uploadedByUserId?: string;
+  uploadedByEmail?: string;
 };
 
 export type EmailIntegration = {
@@ -123,9 +144,14 @@ function sessionHeaders() {
   const session = getSession();
   if (!session) return {};
   try {
-    return {
+    const headers: Record<string, string> = {
       'X-Eventus-Session': window.btoa(unescape(encodeURIComponent(JSON.stringify(session)))),
     };
+    if (session.sessionToken) {
+      headers['X-Eventus-Auth'] = session.sessionToken;
+      headers.Authorization = `Bearer ${session.sessionToken}`;
+    }
+    return headers;
   } catch {
     return {};
   }
@@ -370,4 +396,31 @@ export async function syncEmailInbox(context: Partial<EmailRecord> & { userId?: 
     writeLocalRows(LOCAL_EMAILS_KEY, body.rows, 'emailRecords');
   }
   return body?.row;
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Could not read file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function uploadBackendFile(file: File, context: { candidateId?: string; candidateName?: string; documentType?: string; entityType?: string } = {}) {
+  const dataUrl = await fileToDataUrl(file);
+  const result = await requestJsonResult<{ ok: boolean; file?: AtsStoredFile; message?: string }>('/files', {
+    method: 'POST',
+    body: JSON.stringify({
+      ...context,
+      fileName: file.name,
+      fileType: file.type || 'application/octet-stream',
+      fileSize: file.size,
+      dataUrl,
+    }),
+  });
+  if (!result.ok || !result.data?.file) {
+    throw new Error(result.data?.message || 'File upload failed.');
+  }
+  return result.data.file;
 }

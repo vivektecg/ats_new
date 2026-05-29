@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { mkdir, appendFile, readFile, writeFile } from 'node:fs/promises';
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { dirname, extname, join } from 'node:path';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAtsStore } from './ats-store.mjs';
 
@@ -40,6 +40,7 @@ const PORT = Number(process.env.PORT || process.env.AI_API_PORT || 8787);
 const AUDIT_DIR = join(__dirname, 'audit');
 const AUDIT_LOG = join(AUDIT_DIR, 'ai-audit.jsonl');
 const DATA_DIR = join(__dirname, 'data');
+const FILE_STORAGE_DIR = process.env.ATS_FILE_STORAGE_DIR || join(__dirname, 'uploads');
 const ATS_DB = join(DATA_DIR, 'ats-db.json');
 const GITHUB_BACKUP_FILE = join(DATA_DIR, 'github-backup.json');
 const OUTLOOK_OAUTH_STATES_FILE = join(DATA_DIR, 'outlook-oauth-states.json');
@@ -63,6 +64,7 @@ const ATS_COLLECTIONS = new Set([
   'automations',
   'integrations',
   'integrationSyncLogs',
+  'fileUploads',
 ]);
 const AUTH_COLLECTIONS = new Set([
   'authUsers',
@@ -70,6 +72,28 @@ const AUTH_COLLECTIONS = new Set([
   'passwordResetRequests',
   'passwordEmailOutbox',
 ]);
+const ALL_SECTION_PERMISSIONS = [
+  'dashboard',
+  'candidates',
+  'jobs',
+  'clients',
+  'vendors',
+  'submissions',
+  'offers',
+  'onboarding',
+  'imports',
+  'documents',
+  'pipeline',
+  'calendar',
+  'tasks',
+  'automations',
+  'compliance',
+  'compliance-management',
+  'reports',
+  'integrations',
+  'ai-assistant',
+  'users',
+];
 const atsStore = createAtsStore({
   collections: ATS_COLLECTIONS,
   dataDir: DATA_DIR,
@@ -118,6 +142,96 @@ const DEFAULT_SUPERUSER = {
   title: 'System Owner',
   updatedAt: '2026-05-21T00:00:00.000Z',
 };
+const PASSWORD_HASH_PREFIX = 'scrypt';
+const SESSION_MAX_AGE_MS = Number(process.env.ATS_SESSION_MAX_AGE_MS || 8 * 60 * 60 * 1000);
+
+function serverSecret(name, localPrefix) {
+  const configured = process.env[name] || process.env.ATS_SECRET_KEY;
+  if (configured) return configured;
+  if (process.env.NODE_ENV === 'production') return '';
+  return `${localPrefix}:${PROJECT_DIR}`;
+}
+
+function sessionSecret() {
+  return serverSecret('ATS_SESSION_SECRET', 'eventus-local-session-secret');
+}
+
+function base64Url(value) {
+  return Buffer.from(value).toString('base64url');
+}
+
+function hashPassword(password) {
+  const salt = randomBytes(16).toString('base64url');
+  const hash = scryptSync(String(password), salt, 64).toString('base64url');
+  return `${PASSWORD_HASH_PREFIX}$${salt}$${hash}`;
+}
+
+function legacyPasswordFromHash(passwordHash) {
+  try {
+    const decoded = Buffer.from(String(passwordHash || ''), 'base64').toString('utf8');
+    return decoded.startsWith('eventus:') ? decoded.slice('eventus:'.length) : '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizePasswordHash(passwordHash) {
+  const hash = String(passwordHash || '');
+  if (hash.startsWith(`${PASSWORD_HASH_PREFIX}$`)) return hash;
+  const legacyPassword = legacyPasswordFromHash(hash);
+  return legacyPassword ? hashPassword(legacyPassword) : hash;
+}
+
+function verifyPasswordHash(passwordHash, password) {
+  const hash = String(passwordHash || '');
+  if (hash.startsWith(`${PASSWORD_HASH_PREFIX}$`)) {
+    const [, salt, stored] = hash.split('$');
+    if (!salt || !stored) return false;
+    const candidate = scryptSync(String(password || ''), salt, 64);
+    const storedBuffer = Buffer.from(stored, 'base64url');
+    return storedBuffer.length === candidate.length && timingSafeEqual(storedBuffer, candidate);
+  }
+  return legacyPasswordFromHash(hash) === String(password || '');
+}
+
+function signSession(session) {
+  const secret = sessionSecret();
+  if (!secret) throw new Error('ATS_SESSION_SECRET is required for backend login sessions in production.');
+  const payload = base64Url(JSON.stringify(session));
+  const signature = createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifySignedSession(token) {
+  const secret = sessionSecret();
+  if (!secret || !token || !String(token).includes('.')) return null;
+  const [payload, signature] = String(token).split('.');
+  const expected = createHmac('sha256', secret).update(payload).digest('base64url');
+  const signatureBuffer = Buffer.from(signature || '', 'base64url');
+  const expectedBuffer = Buffer.from(expected, 'base64url');
+  if (signatureBuffer.length !== expectedBuffer.length || !timingSafeEqual(signatureBuffer, expectedBuffer)) return null;
+  try {
+    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (Number(session.expiresAt || 0) < Date.now()) return null;
+    return session;
+  } catch {
+    return null;
+  }
+}
+
+function fileDownloadToken(fileId) {
+  const secret = sessionSecret();
+  if (!secret) return '';
+  return createHmac('sha256', secret).update(String(fileId)).digest('base64url');
+}
+
+function verifyFileDownloadToken(fileId, token) {
+  const expected = fileDownloadToken(fileId);
+  const given = String(token || '');
+  const expectedBuffer = Buffer.from(expected || '', 'base64url');
+  const givenBuffer = Buffer.from(given || '', 'base64url');
+  return expectedBuffer.length > 0 && expectedBuffer.length === givenBuffer.length && timingSafeEqual(expectedBuffer, givenBuffer);
+}
 
 function json(response, status, body) {
   response.writeHead(status, {
@@ -308,6 +422,21 @@ function normalizeAuthRows(rows) {
   return Array.isArray(rows) ? rows.filter(Boolean) : [];
 }
 
+function normalizeAuthUser(row) {
+  return {
+    ...row,
+    id: String(row?.id || `user-${Date.now()}`),
+    name: String(row?.name || 'ATS User'),
+    email: String(row?.email || '').toLowerCase(),
+    role: row?.role === 'SuperUser' ? 'SuperUser' : 'User',
+    active: row?.active !== false,
+    permissions: Array.isArray(row?.permissions) ? row.permissions : [],
+    passwordHash: normalizePasswordHash(row?.passwordHash),
+    createdAt: String(row?.createdAt || new Date().toISOString()),
+    updatedAt: String(row?.updatedAt || new Date().toISOString()),
+  };
+}
+
 async function ensureAuthState() {
   const [users, metadataRows, passwordResetRequests, passwordEmailOutbox] = await Promise.all([
     authStore.readCollection('authUsers'),
@@ -322,7 +451,7 @@ async function ensureAuthState() {
     ...currentMetadata,
     id: 'superuser-profile',
     email: String(currentMetadata.email || DEFAULT_SUPERUSER.email).toLowerCase(),
-    passwordHash: String(currentMetadata.passwordHash || DEFAULT_SUPERUSER.passwordHash),
+    passwordHash: normalizePasswordHash(currentMetadata.passwordHash || DEFAULT_SUPERUSER.passwordHash),
     name: String(currentMetadata.name || DEFAULT_SUPERUSER.name),
     title: String(currentMetadata.title || DEFAULT_SUPERUSER.title),
     phone: String(currentMetadata.phone || ''),
@@ -350,27 +479,57 @@ async function ensureAuthState() {
     await authStore.replaceCollection('authMetadata', [mergedMetadata]);
   }
 
+  const normalizedUsers = normalizeAuthRows(users).map(normalizeAuthUser);
+  if (JSON.stringify(users) !== JSON.stringify(normalizedUsers)) {
+    await authStore.replaceCollection('authUsers', normalizedUsers);
+  }
+
   return {
-    users: normalizeAuthRows(users),
+    users: normalizedUsers,
     superUser: mergedMetadata,
     passwordResetRequests: normalizeAuthRows(passwordResetRequests),
     passwordEmailOutbox: normalizeAuthRows(passwordEmailOutbox),
   };
 }
 
+function shouldRequireBackendAuth() {
+  return process.env.NODE_ENV === 'production' && process.env.ATS_REQUIRE_AUTH !== 'false';
+}
+
+function publicAuthState(state) {
+  return {
+    users: [],
+    superUser: {
+      id: state.superUser.id,
+      name: state.superUser.name,
+      email: state.superUser.email,
+      avatarUrl: state.superUser.avatarUrl,
+      title: state.superUser.title,
+    },
+    passwordResetRequests: [],
+    passwordEmailOutbox: [],
+  };
+}
+
 async function handleAuthState(request, response) {
+  const actor = actorFromRequest(request);
   if (request.method === 'GET') {
-    return json(response, 200, await ensureAuthState());
+    const state = await ensureAuthState();
+    if (shouldRequireBackendAuth() && actor?.role !== 'SuperUser') return json(response, 200, publicAuthState(state));
+    return json(response, 200, state);
   }
 
   if (request.method === 'PUT') {
+    if (shouldRequireBackendAuth() && actor?.role !== 'SuperUser') {
+      return json(response, 403, { ok: false, message: 'Only SuperUser can update backend auth state.' });
+    }
     const body = JSON.parse(await readBody(request) || '{}');
     const superUser = {
       ...DEFAULT_SUPERUSER,
       ...(body.superUser && typeof body.superUser === 'object' ? body.superUser : {}),
       id: 'superuser-profile',
       email: String(body?.superUser?.email || DEFAULT_SUPERUSER.email).toLowerCase(),
-      passwordHash: String(body?.superUser?.passwordHash || DEFAULT_SUPERUSER.passwordHash),
+      passwordHash: normalizePasswordHash(body?.superUser?.passwordHash || DEFAULT_SUPERUSER.passwordHash),
       name: String(body?.superUser?.name || DEFAULT_SUPERUSER.name),
       title: String(body?.superUser?.title || DEFAULT_SUPERUSER.title),
       phone: String(body?.superUser?.phone || ''),
@@ -394,7 +553,7 @@ async function handleAuthState(request, response) {
     };
 
     await Promise.all([
-      authStore.replaceCollection('authUsers', normalizeAuthRows(body.users)),
+      authStore.replaceCollection('authUsers', normalizeAuthRows(body.users).map(normalizeAuthUser)),
       authStore.replaceCollection('authMetadata', [superUser]),
       authStore.replaceCollection('passwordResetRequests', normalizeAuthRows(body.passwordResetRequests)),
       authStore.replaceCollection('passwordEmailOutbox', normalizeAuthRows(body.passwordEmailOutbox)),
@@ -407,6 +566,69 @@ async function handleAuthState(request, response) {
   return json(response, 405, { error: 'Method not allowed' });
 }
 
+function publicSessionForUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    permissions: Array.isArray(user.permissions) ? user.permissions : [],
+    loginAt: new Date().toISOString(),
+    avatarUrl: user.avatarUrl || undefined,
+  };
+}
+
+function withSignedSession(session) {
+  const issuedAt = Date.now();
+  const tokenPayload = {
+    ...session,
+    issuedAt,
+    expiresAt: issuedAt + SESSION_MAX_AGE_MS,
+  };
+  return {
+    ...session,
+    sessionToken: signSession(tokenPayload),
+    expiresAt: new Date(tokenPayload.expiresAt).toISOString(),
+  };
+}
+
+async function handleAuthLogin(request, response) {
+  const body = JSON.parse(await readBody(request) || '{}');
+  const state = await ensureAuthState();
+  const password = String(body.password || '');
+  const identifier = String(body.email || body.identifier || '').trim().toLowerCase();
+  if (!identifier || !password) {
+    return json(response, 400, { ok: false, message: 'Email/user ID and password are required.' });
+  }
+
+  if (body.mode === 'admin' || identifier === state.superUser.email.toLowerCase()) {
+    if (identifier !== state.superUser.email.toLowerCase() || !verifyPasswordHash(state.superUser.passwordHash, password)) {
+      return json(response, 401, { ok: false, message: 'Invalid SuperUser email or password.' });
+    }
+    const session = withSignedSession(publicSessionForUser({
+      id: 'SuperUser',
+      name: state.superUser.name || 'SuperUser',
+      email: state.superUser.email,
+      role: 'SuperUser',
+      permissions: ALL_SECTION_PERMISSIONS,
+      avatarUrl: state.superUser.avatarUrl,
+    }));
+    await audit({ actor: session.email, status: 'login-success', role: session.role });
+    return json(response, 200, { ok: true, session });
+  }
+
+  const user = state.users.find(row => row.email.toLowerCase() === identifier || row.id.toLowerCase() === identifier);
+  if (!user || !verifyPasswordHash(user.passwordHash, password)) {
+    return json(response, 401, { ok: false, message: 'Invalid user ID/email or password.' });
+  }
+  if (!user.active) return json(response, 403, { ok: false, message: 'This user account is disabled. Contact SuperUser.' });
+  if (user.passwordBlocked) return json(response, 403, { ok: false, message: 'This user password is blocked. Contact SuperUser for a new temporary password.' });
+
+  const session = withSignedSession(publicSessionForUser(user));
+  await audit({ actor: session.email, status: 'login-success', role: session.role });
+  return json(response, 200, { ok: true, session, mustChangePassword: Boolean(user.mustChangePassword) });
+}
+
 function collectionFromUrl(url = '') {
   const pathname = new URL(url, 'http://localhost').pathname;
   const [, api, ats, collection, id] = pathname.split('/');
@@ -415,7 +637,12 @@ function collectionFromUrl(url = '') {
 }
 
 function actorFromRequest(request) {
-  const session = decodeSession(request.headers['x-recruitiq-session'] || request.headers['x-vrecruit-session'] || request.headers['x-eventus-session']);
+  const authHeader = String(request.headers.authorization || '');
+  const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
+  const signedSession = verifySignedSession(request.headers['x-eventus-auth'] || bearerToken);
+  const session = signedSession || (shouldRequireBackendAuth()
+    ? null
+    : decodeSession(request.headers['x-recruitiq-session'] || request.headers['x-vrecruit-session'] || request.headers['x-eventus-session']));
   if (!session) return null;
   return {
     id: session.id || 'unknown-user',
@@ -493,6 +720,9 @@ async function handleAtsCollection(request, response) {
   const route = collectionFromUrl(request.url);
   if (!route) return json(response, 404, { error: 'ATS collection not found' });
   const actor = actorFromRequest(request);
+  if (shouldRequireBackendAuth() && !actor) {
+    return json(response, 401, { error: 'auth-required', message: 'Sign in before accessing ATS records.' });
+  }
 
   const db = await readAtsDb();
   const current = Array.isArray(db[route.collection]) ? db[route.collection] : [];
@@ -1006,12 +1236,12 @@ async function handleEmailSync(request, response) {
   return json(response, 200, { row, rows: db.emailRecords });
 }
 
-function readBody(request) {
+function readBody(request, maxBytes = Number(process.env.ATS_JSON_BODY_MAX_BYTES || 20 * 1024 * 1024)) {
   return new Promise((resolve, reject) => {
     let body = '';
     request.on('data', chunk => {
       body += chunk;
-      if (body.length > 1_000_000) {
+      if (body.length > maxBytes) {
         request.destroy();
         reject(new Error('Request body too large'));
       }
@@ -1019,6 +1249,85 @@ function readBody(request) {
     request.on('end', () => resolve(body));
     request.on('error', reject);
   });
+}
+
+function safeFileName(fileName) {
+  const cleaned = basename(String(fileName || 'upload.bin')).replace(/[^a-zA-Z0-9._-]/g, '_');
+  return cleaned || 'upload.bin';
+}
+
+function decodeUploadPayload(body) {
+  const data = String(body.dataUrl || body.base64 || '');
+  const commaIndex = data.indexOf(',');
+  const base64 = commaIndex >= 0 ? data.slice(commaIndex + 1) : data;
+  return Buffer.from(base64, 'base64');
+}
+
+async function handleFileUpload(request, response) {
+  const actor = actorFromRequest(request);
+  if (!actor) return json(response, 401, { ok: false, message: 'Sign in before uploading candidate files.' });
+  const maxBytes = Number(process.env.ATS_FILE_UPLOAD_MAX_BYTES || 25 * 1024 * 1024);
+  const body = JSON.parse(await readBody(request, Math.ceil(maxBytes * 1.4) + 4096) || '{}');
+  const fileBuffer = decodeUploadPayload(body);
+  if (!fileBuffer.length) return json(response, 400, { ok: false, message: 'No file content was received.' });
+  if (fileBuffer.length > maxBytes) return json(response, 413, { ok: false, message: `File is larger than ${Math.round(maxBytes / 1024 / 1024)} MB.` });
+
+  const now = new Date();
+  const id = `file-${now.getTime()}-${randomUUID()}`;
+  const fileName = safeFileName(body.fileName);
+  const storageName = `${id}${extname(fileName) || ''}`;
+  const relativeDir = join(String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'));
+  const storageDir = join(FILE_STORAGE_DIR, relativeDir);
+  const storagePath = join(storageDir, storageName);
+  await mkdir(storageDir, { recursive: true });
+  await writeFile(storagePath, fileBuffer);
+
+  const downloadToken = fileDownloadToken(id);
+  const row = {
+    id,
+    fileName,
+    fileType: String(body.fileType || 'application/octet-stream'),
+    fileSize: fileBuffer.length,
+    candidateId: String(body.candidateId || ''),
+    candidateName: String(body.candidateName || ''),
+    documentType: String(body.documentType || body.type || 'Resume'),
+    entityType: String(body.entityType || 'candidate'),
+    storageProvider: 'backend-file-storage',
+    storagePath,
+    relativePath: join(relativeDir, storageName),
+    downloadUrl: `/api/ats/files/${encodeURIComponent(id)}/download${downloadToken ? `?token=${encodeURIComponent(downloadToken)}` : ''}`,
+    uploadedAt: now.toISOString(),
+    uploadedBy: actor.name,
+    uploadedByUserId: actor.id,
+    uploadedByEmail: actor.email,
+  };
+  await atsStore.upsertRows('fileUploads', [row]);
+  scheduleGithubBackup('file-upload');
+  return json(response, 200, { ok: true, file: row });
+}
+
+async function handleFileDownload(request, response) {
+  const match = pathnameFromUrl(request.url).match(/^\/api\/ats\/files\/([^/]+)\/download$/);
+  const fileId = decodeURIComponent(match?.[1] || '');
+  const actor = actorFromRequest(request);
+  const token = new URL(request.url, 'http://localhost').searchParams.get('token') || '';
+  if (!actor && process.env.NODE_ENV === 'production' && !verifyFileDownloadToken(fileId, token)) {
+    return json(response, 401, { ok: false, message: 'Sign in before downloading files.' });
+  }
+  const rows = await atsStore.readCollection('fileUploads');
+  const file = rows.find(row => row.id === fileId);
+  if (!file?.storagePath) return json(response, 404, { ok: false, message: 'File not found.' });
+  try {
+    const payload = await readFile(file.storagePath);
+    response.writeHead(200, {
+      'Content-Type': file.fileType || 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${safeFileName(file.fileName)}"`,
+      'Cache-Control': 'private, max-age=60',
+    });
+    response.end(payload);
+  } catch {
+    return json(response, 404, { ok: false, message: 'Stored file is missing from backend storage.' });
+  }
 }
 
 function decodeSession(headerValue) {
@@ -1138,7 +1447,12 @@ async function callLLM(request) {
 
 async function handleAI(request, response) {
   const requestId = request.headers['x-recruitiq-request-id'] || request.headers['x-vrecruit-request-id'] || request.headers['x-eventus-request-id'] || `ai-${Date.now()}`;
-  const session = decodeSession(request.headers['x-recruitiq-session'] || request.headers['x-vrecruit-session'] || request.headers['x-eventus-session']);
+  const authHeader = String(request.headers.authorization || '');
+  const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
+  const signedSession = verifySignedSession(request.headers['x-eventus-auth'] || bearerToken);
+  const session = signedSession || (shouldRequireBackendAuth()
+    ? null
+    : decodeSession(request.headers['x-recruitiq-session'] || request.headers['x-vrecruit-session'] || request.headers['x-eventus-session']));
   const actor = session?.email || 'anonymous';
 
   if (!hasAIAccess(session)) {
@@ -1411,23 +1725,34 @@ async function handleGithubBackup(request, response) {
 }
 
 const server = http.createServer(async (request, response) => {
-  if (request.method === 'OPTIONS') return json(response, 204, {});
-  const pathname = pathnameFromUrl(request.url);
-  if (request.method === 'GET' && pathname === '/healthz') return json(response, 200, { ok: true, storage: atsStore.mode });
-  if (pathname === '/api/auth/state' && (request.method === 'GET' || request.method === 'PUT')) return handleAuthState(request, response);
-  if (pathname === '/api/ats/github/backup' && request.method === 'POST') return handleGithubBackup(request, response);
-  if (request.method === 'POST' && pathname === '/api/ai/run') return handleAI(request, response);
-  if (request.method === 'GET' && pathname === '/api/ai/audit') return handleAudit(request, response);
-  if (pathname === '/api/ats/submissions/submit' && request.method === 'POST') return handleSubmissionSubmit(request, response);
-  if (pathname === '/api/ats/email/connect' && request.method === 'POST') return handleEmailConnect(request, response);
-  if (pathname === '/api/ats/email/outlook/status' && request.method === 'GET') return handleOutlookStatus(request, response);
-  if (pathname === '/api/ats/email/outlook/start' && (request.method === 'GET' || request.method === 'POST')) return handleOutlookStart(request, response);
-  if (pathname === '/api/ats/email/outlook/callback' && request.method === 'GET') return handleOutlookCallback(request, response);
-  if (pathname === '/api/ats/email/send' && request.method === 'POST') return handleEmailSend(request, response);
-  if (pathname === '/api/ats/email/sync' && (request.method === 'POST' || request.method === 'GET')) return handleEmailSync(request, response);
-  if (collectionFromUrl(request.url)) return handleAtsCollection(request, response);
-  if (await serveFrontendAsset(request, response)) return;
-  return json(response, 404, { error: 'Not found' });
+  try {
+    if (request.method === 'OPTIONS') return json(response, 204, {});
+    const pathname = pathnameFromUrl(request.url);
+    if (request.method === 'GET' && pathname === '/healthz') return json(response, 200, { ok: true, storage: atsStore.mode });
+    if (pathname === '/api/auth/state' && (request.method === 'GET' || request.method === 'PUT')) return handleAuthState(request, response);
+    if (pathname === '/api/auth/login' && request.method === 'POST') return handleAuthLogin(request, response);
+    if (pathname === '/api/ats/github/backup' && request.method === 'POST') return handleGithubBackup(request, response);
+    if (pathname === '/api/ats/files' && request.method === 'POST') return handleFileUpload(request, response);
+    if (/^\/api\/ats\/files\/[^/]+\/download$/.test(pathname) && request.method === 'GET') return handleFileDownload(request, response);
+    if (request.method === 'POST' && pathname === '/api/ai/run') return handleAI(request, response);
+    if (request.method === 'GET' && pathname === '/api/ai/audit') return handleAudit(request, response);
+    if (pathname === '/api/ats/submissions/submit' && request.method === 'POST') return handleSubmissionSubmit(request, response);
+    if (pathname === '/api/ats/email/connect' && request.method === 'POST') return handleEmailConnect(request, response);
+    if (pathname === '/api/ats/email/outlook/status' && request.method === 'GET') return handleOutlookStatus(request, response);
+    if (pathname === '/api/ats/email/outlook/start' && (request.method === 'GET' || request.method === 'POST')) return handleOutlookStart(request, response);
+    if (pathname === '/api/ats/email/outlook/callback' && request.method === 'GET') return handleOutlookCallback(request, response);
+    if (pathname === '/api/ats/email/send' && request.method === 'POST') return handleEmailSend(request, response);
+    if (pathname === '/api/ats/email/sync' && (request.method === 'POST' || request.method === 'GET')) return handleEmailSync(request, response);
+    if (collectionFromUrl(request.url)) return handleAtsCollection(request, response);
+    if (await serveFrontendAsset(request, response)) return;
+    return json(response, 404, { error: 'Not found' });
+  } catch (error) {
+    const status = error instanceof Error && error.message === 'Request body too large' ? 413 : 500;
+    return json(response, status, {
+      ok: false,
+      message: error instanceof Error ? error.message : 'ATS backend request failed.',
+    });
+  }
 });
 
 server.listen(PORT, () => {

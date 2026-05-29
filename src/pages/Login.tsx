@@ -20,6 +20,7 @@ import {
   ensureAuthHydrated,
   getSuperUserProfile,
   getUsers,
+  loginWithBackend,
   makeSuperUserSession,
   requestPasswordReset,
   saveSession,
@@ -121,8 +122,17 @@ export default function Login() {
 
     if (mode === 'admin') {
       const normalizedAdminEmail = adminEmail.trim().toLowerCase();
+      const backendLogin = await loginWithBackend({ mode: 'admin', email: normalizedAdminEmail, password: adminPassword });
+      if (backendLogin.ok && backendLogin.session) {
+        await finishLogin(from);
+        return;
+      }
+      if (backendLogin.status !== 0) {
+        setError(backendLogin.message || 'Invalid SuperUser email or password.');
+        return;
+      }
       if (normalizedAdminEmail !== superUserProfile.email.toLowerCase() || !verifySuperUserPassword(adminPassword)) {
-        setError('Invalid SuperUser email or password.');
+        setError(backendLogin.status === 0 ? 'Backend login is unavailable, and local SuperUser credentials did not match.' : backendLogin.message || 'Invalid SuperUser email or password.');
         return;
       }
       saveSession(makeSuperUserSession());
@@ -131,11 +141,26 @@ export default function Login() {
     }
 
     const identifier = userIdentifier.trim().toLowerCase();
+    const backendLogin = await loginWithBackend({ mode: 'user', identifier, password: userPassword });
+    if (backendLogin.ok && backendLogin.session) {
+      if (backendLogin.mustChangePassword) {
+        navigate('/reset-password?mode=force', { replace: true });
+        return;
+      }
+      const requestedSection = sectionForPath(from);
+      const fallbackPath = allSections.find(section => backendLogin.session?.permissions.includes(section.key))?.path ?? '/dashboard';
+      await finishLogin(canAccess(backendLogin.session, requestedSection) ? from : fallbackPath);
+      return;
+    }
+    if (backendLogin.status !== 0) {
+      setError(backendLogin.message || 'Invalid user ID/email or password.');
+      return;
+    }
     const user = getUsers().find(
       savedUser => savedUser.email.toLowerCase() === identifier || savedUser.id.toLowerCase() === identifier
     );
     if (!user || !verifyPassword(user.passwordHash, userPassword)) {
-      setError('Invalid user ID/email or password.');
+      setError(backendLogin.status === 0 ? 'Backend login is unavailable, and local user credentials did not match.' : backendLogin.message || 'Invalid user ID/email or password.');
       return;
     }
     if (!user.active) {

@@ -8,11 +8,27 @@ services:
     startCommand: npm start
     preDeployCommand: npm run db:migrate
     healthCheckPath: /healthz
+    disk:
+      name: eventus-ats-files
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
       - key: ATS_STORAGE
         value: postgres
+      - key: ATS_REQUIRE_AUTH
+        value: true
+      - key: ATS_FILE_STORAGE_DIR
+        value: /var/data/uploads
+      - key: ATS_FILE_UPLOAD_MAX_BYTES
+        value: 26214400
+      - key: ATS_JSON_BODY_MAX_BYTES
+        value: 20971520
+      - key: ATS_SESSION_SECRET
+        generateValue: true
+      - key: ATS_TOKEN_ENCRYPTION_KEY
+        generateValue: true
       - key: DATABASE_URL
         fromDatabase:
           name: eventus-ats-db

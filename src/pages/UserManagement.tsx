@@ -1442,7 +1442,7 @@ export default function UserManagement() {
               <div>
                 <h3 className="text-sm font-semibold text-amber-100">Security Implementation Note</h3>
                 <p className="mt-1 text-xs leading-relaxed text-amber-100/70">
-                  This screen establishes the ATS role model and admin workflow in the React app. Production security should enforce the same permissions on the backend with hashed passwords, MFA, rate limiting, secure sessions, and audit logging.
+                  Production backend security now uses signed sessions, upgraded password hashes, protected ATS data endpoints, AI request rate limits, and audit logging. Add MFA from the hosting identity provider before broad team rollout.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {sensitiveSections.map(section => (

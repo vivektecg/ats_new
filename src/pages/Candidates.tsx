@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { getAllJobs, getAllSubmissions } from '@/lib/localRecords';
 import { ATS_RECORDS_UPDATED_EVENT, LOCAL_CANDIDATES_KEY, normalizeCandidateRecord } from '@/lib/atsLocalStore';
-import { saveRows, sendEmailRecord } from '@/lib/atsApi';
+import { saveRows, sendEmailRecord, uploadBackendFile } from '@/lib/atsApi';
 import { currentOwnerName, getAtsOwnerNames, resolveSession } from '@/lib/auth';
 import { formatCallDuration, openCandidateDialer, saveCandidateCallLog, type CallOutcome } from '@/lib/callLogs';
 import { currentCallingSettings } from '@/lib/callingSettings';
@@ -49,10 +49,16 @@ type CandidateRecord = Candidate & {
 };
 
 type FileAttachment = {
+  id?: string;
   fileName: string;
   fileType: string;
   fileSize: number;
   uploadedAt: string;
+  storageProvider?: string;
+  storagePath?: string;
+  relativePath?: string;
+  downloadUrl?: string;
+  uploadedBy?: string;
 };
 
 type CandidateFormState = {
@@ -126,12 +132,13 @@ function isCitizenAuthorization(value: string) {
   return ['us citizen', 'usc'].includes(value.trim().toLowerCase());
 }
 
-function attachmentFromFile(file: File): FileAttachment {
+function attachmentFromFile(file: File, stored?: Partial<FileAttachment>): FileAttachment {
   return {
+    ...stored,
     fileName: file.name,
     fileType: file.type || 'application/octet-stream',
     fileSize: file.size,
-    uploadedAt: new Date().toISOString(),
+    uploadedAt: stored?.uploadedAt || new Date().toISOString(),
   };
 }
 
@@ -1480,6 +1487,8 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
   const [supportingDocuments, setSupportingDocuments] = useState(candidate.supportingDocuments.join(', '));
   const [resumeAttachment, setResumeAttachment] = useState<FileAttachment | undefined>(candidate.resumeAttachment);
   const [supportingAttachments, setSupportingAttachments] = useState<FileAttachment[]>(candidate.supportingDocumentAttachments ?? []);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const supportingDocumentList = supportingDocuments.split(',').map(item => item.trim()).filter(Boolean);
   return (
     <Panel title={`Upload Resume: ${candidate.name}`} onClose={onClose}>
@@ -1487,8 +1496,10 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
         <div className="rounded-lg border border-dashed border-white/15 bg-white/[0.03] p-8 text-center">
           <FileUp size={28} className="mx-auto mb-3 text-blue-300" />
           <p className="text-sm font-medium text-white">{resumeAttachment?.fileName ?? fileName}</p>
-          <p className="mt-1 text-xs text-slate-500">PDF, DOC, DOCX, image, text, or ZIP</p>
+          <p className="mt-1 text-xs text-slate-500">{uploading ? 'Uploading to backend storage...' : 'PDF, DOC, DOCX, image, text, or ZIP'}</p>
+          {resumeAttachment?.downloadUrl && <p className="mt-1 text-xs text-emerald-300">Stored in ATS backend file storage</p>}
         </div>
+        {uploadError && <p className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{uploadError}</p>}
         <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
           <FileUp size={15} />
           Select Resume File
@@ -1496,13 +1507,27 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
             type="file"
             accept={candidateDocumentAcceptTypes}
             className="hidden"
-            onChange={event => {
+            onChange={async event => {
               const file = event.target.files?.[0];
               if (!file) return;
-              const next = attachmentFromFile(file);
-              setResumeAttachment(next);
-              setFileName(next.fileName);
-              event.target.value = '';
+              setUploading(true);
+              setUploadError('');
+              try {
+                const stored = await uploadBackendFile(file, {
+                  candidateId: candidate.id,
+                  candidateName: candidate.name,
+                  documentType: 'Resume',
+                  entityType: 'candidate-resume',
+                });
+                const next = attachmentFromFile(file, stored);
+                setResumeAttachment(next);
+                setFileName(next.fileName);
+              } catch (error) {
+                setUploadError(error instanceof Error ? error.message : 'Resume upload failed.');
+              } finally {
+                setUploading(false);
+                event.target.value = '';
+              }
             }}
           />
         </label>
@@ -1541,14 +1566,30 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
                 multiple
                 accept={candidateDocumentAcceptTypes}
                 className="hidden"
-                onChange={event => {
+                onChange={async event => {
                   const files = Array.from(event.target.files ?? []);
                   if (!files.length) return;
-                  const uploaded = files.map(attachmentFromFile);
-                  const nextNames = [...new Set([...supportingDocumentList, ...uploaded.map(file => file.fileName)])];
-                  setSupportingDocuments(nextNames.join(', '));
-                  setSupportingAttachments(current => [...uploaded, ...current]);
-                  event.target.value = '';
+                  setUploading(true);
+                  setUploadError('');
+                  try {
+                    const uploaded = await Promise.all(files.map(async file => {
+                      const stored = await uploadBackendFile(file, {
+                        candidateId: candidate.id,
+                        candidateName: candidate.name,
+                        documentType: 'Supporting document',
+                        entityType: 'candidate-document',
+                      });
+                      return attachmentFromFile(file, stored);
+                    }));
+                    const nextNames = [...new Set([...supportingDocumentList, ...uploaded.map(file => file.fileName)])];
+                    setSupportingDocuments(nextNames.join(', '));
+                    setSupportingAttachments(current => [...uploaded, ...current]);
+                  } catch (error) {
+                    setUploadError(error instanceof Error ? error.message : 'Supporting document upload failed.');
+                  } finally {
+                    setUploading(false);
+                    event.target.value = '';
+                  }
                 }}
               />
             </label>
@@ -1564,9 +1605,9 @@ function UploadPanel({ candidate, onClose, onSubmit }: { candidate: CandidateRec
             )}
           </div>
         )}
-        <button onClick={() => onSubmit(fileName, includeSupportingDocuments ? supportingDocumentList : [], resumeAttachment ?? { fileName, fileType: 'manual-entry', fileSize: 0, uploadedAt: new Date().toISOString() }, includeSupportingDocuments ? supportingAttachments : [])} className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500">
+        <button disabled={uploading} onClick={() => onSubmit(fileName, includeSupportingDocuments ? supportingDocumentList : [], resumeAttachment ?? { fileName, fileType: 'manual-entry', fileSize: 0, uploadedAt: new Date().toISOString() }, includeSupportingDocuments ? supportingAttachments : [])} className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60">
           <Upload size={16} />
-          Upload Documents
+          {uploading ? 'Uploading...' : 'Upload Documents'}
         </button>
       </div>
     </Panel>

@@ -64,6 +64,8 @@ export interface AuthSession {
   permissions: SectionKey[];
   loginAt: string;
   avatarUrl?: string;
+  sessionToken?: string;
+  expiresAt?: string;
 }
 
 export interface AtsOwner {
@@ -138,6 +140,13 @@ interface AuthBackendState {
   superUser: SuperUserProfile;
   passwordResetRequests: PasswordResetRequest[];
   passwordEmailOutbox: PasswordEmailOutboxItem[];
+}
+
+interface AuthLoginResponse {
+  ok: boolean;
+  message?: string;
+  session?: AuthSession;
+  mustChangePassword?: boolean;
 }
 
 export const allSections: Array<{ key: SectionKey; label: string; path: string; sensitive?: boolean }> = [
@@ -216,6 +225,10 @@ function authApiRoot() {
   return '/api/auth/state';
 }
 
+function authLoginApiRoot() {
+  return '/api/auth/login';
+}
+
 function normalizeSuperUserProfile(profile: Partial<SuperUserProfile> | null | undefined): SuperUserProfile {
   return {
     ...defaultSuperUserProfile,
@@ -287,10 +300,12 @@ function writeLocalAuthState(state: Partial<AuthBackendState>) {
 
 async function requestAuthState(init?: RequestInit): Promise<AuthBackendState | null> {
   try {
+    const session = getSession();
     const response = await fetch(authApiRoot(), {
       ...init,
       headers: {
         'Content-Type': 'application/json',
+        ...(session?.sessionToken ? { 'X-Eventus-Auth': session.sessionToken, Authorization: `Bearer ${session.sessionToken}` } : {}),
         ...(init?.headers ?? {}),
       },
     });
@@ -372,6 +387,24 @@ export function notifySessionUpdated() {
 export function saveSession(session: AuthSession, shouldNotify = true) {
   window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   if (shouldNotify) notifySessionUpdated();
+}
+
+export async function loginWithBackend(input: { mode: 'admin' | 'user'; email?: string; identifier?: string; password: string }) {
+  try {
+    const response = await fetch(authLoginApiRoot(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const body = await response.json().catch(() => null) as AuthLoginResponse | null;
+    if (!response.ok || !body?.session) {
+      return { ok: false, status: response.status, message: body?.message || 'Backend login failed.' };
+    }
+    saveSession(body.session);
+    return { ok: true, status: response.status, session: body.session, mustChangePassword: Boolean(body.mustChangePassword) };
+  } catch {
+    return { ok: false, status: 0, message: 'Backend login is unavailable.' };
+  }
 }
 
 export function clearSession() {
